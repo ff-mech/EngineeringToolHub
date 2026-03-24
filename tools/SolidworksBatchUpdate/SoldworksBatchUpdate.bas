@@ -141,6 +141,9 @@ Private Function ShowCombinedDialog(ByRef opts As BatchOptions) As Boolean
     Dim resultPath As String
     resultPath = Environ("TEMP") & "\SW_CombinedBatchTool_result.txt"
 
+    ' If params file already exists, skip HTA dialog (called from external automation)
+    If Dir(resultPath) <> "" Then GoTo ReadResult
+
     On Error Resume Next
     Kill resultPath
     On Error GoTo 0
@@ -277,6 +280,7 @@ Private Function ShowCombinedDialog(ByRef opts As BatchOptions) As Boolean
 
     If Dir(resultPath) = "" Then Exit Function
 
+ReadResult:
     Dim lines(1 To 7) As String
     Dim lineNum As Long
     lineNum = 0

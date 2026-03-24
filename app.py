@@ -1036,274 +1036,65 @@ class App:
         self._section_header(
             parent,
             "SW Batch Update",
-            "Update SolidWorks custom properties and/or export sheet metal parts to DXF.")
+            "Run the SolidWorks macro directly to update custom properties and export DXFs.")
 
-        card = self._card(parent, "Configuration")
+        macro_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "tools", "SolidworksBatchUpdate", "SoldworksBatchUpdate.swp")
 
-        self._sw_src      = tk.StringVar()
-        self._sw_dxf_dest = tk.StringVar()
-        self._sw_model_i  = tk.StringVar()
-        self._sw_draw_i   = tk.StringVar()
-        self._sw_skip003  = tk.BooleanVar(value=False)
-        self._sw_do_props = tk.BooleanVar(value=True)
-        self._sw_do_dxf   = tk.BooleanVar(value=True)
+        # ── How to Run card ───────────────────────────────────────
+        card = self._card(parent, "How to Run")
 
-        # split layout: left = fields, right = file-count stats box
-        body = tk.Frame(card, bg=C_PANEL)
-        body.pack(fill="x")
+        steps = [
+            ("1", "Open SolidWorks 2023."),
+            ("2", "Go to  Tools  →  Macro  →  Run..."),
+            ("3", "Navigate to the macro file shown below and click Open."),
+            ("4", "The macro dialog will appear — fill in your options and click Run."),
+        ]
+        for num, text in steps:
+            row = tk.Frame(card, bg=C_PANEL)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=num, bg=C_ACCENT, fg="white",
+                     font=("Segoe UI", 9, "bold"),
+                     width=2, anchor="center").pack(side="left", padx=(0, 10))
+            tk.Label(row, text=text, bg=C_PANEL, fg=C_TEXT,
+                     font=F_BODY, anchor="w").pack(side="left")
 
-        left = tk.Frame(body, bg=C_PANEL)
-        left.pack(side="left", fill="x", expand=True)
+        # ── Macro Location card ───────────────────────────────────
+        loc_card = self._card(parent, "Macro File Location")
 
-        # ── stats box (right side) ────────────────────────────────
-        stats_outer = tk.Frame(body, bg=C_BORDER)
-        stats_outer.pack(side="right", anchor="n", padx=(16, 0), pady=2)
-        stats_inner = tk.Frame(stats_outer, bg="#F0F5FF")
-        stats_inner.pack(padx=1, pady=1)
-        stats_pad = tk.Frame(stats_inner, bg="#F0F5FF")
-        stats_pad.pack(padx=12, pady=10)
+        path_row = tk.Frame(loc_card, bg=C_PANEL)
+        path_row.pack(fill="x")
 
-        tk.Label(stats_pad, text="Folder Contents",
-                 bg="#F0F5FF", fg=C_TEXT,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        path_var = tk.StringVar(value=macro_path)
+        path_entry = tk.Entry(path_row, textvariable=path_var, font=F_BODY,
+                              bg="#F8FAFC", fg=C_TEXT,
+                              relief="solid", bd=1, state="readonly")
+        path_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
 
-        self._sw_stat_parts = tk.StringVar(value="—")
-        self._sw_stat_asm   = tk.StringVar(value="—")
-        self._sw_stat_drw   = tk.StringVar(value="—")
-        self._sw_stat_total = tk.StringVar(value="—")
+        def _open_folder():
+            folder = os.path.dirname(macro_path)
+            if os.path.isdir(folder):
+                os.startfile(folder)
 
-        for label, var, color in [
-            ("Parts (.sldprt)",     self._sw_stat_parts, C_ACCENT),
-            ("Assemblies (.sldasm)",self._sw_stat_asm,   "#7C3AED"),
-            ("Drawings (.slddrw)",  self._sw_stat_drw,   "#0891B2"),
-            ("Total",               self._sw_stat_total, C_TEXT),
+        tk.Button(path_row, text="Open Folder", font=F_BODY,
+                  bg=C_PANEL, fg=C_ACCENT, relief="solid", bd=1,
+                  cursor="hand2", command=_open_folder).pack(side="left")
+
+        # ── What it does card ─────────────────────────────────────
+        info_card = self._card(parent, "What the Macro Does")
+        for bullet in [
+            "Updates  DrawnBy  on all part/assembly files in a chosen folder.",
+            "Updates  DwgDrawnBy  and re-stamps all standard drawing properties.",
+            "Exports sheet metal flat-pattern DXFs to a chosen destination folder.",
+            "Optionally skips files whose name starts with  003-.",
         ]:
-            row = tk.Frame(stats_pad, bg="#F0F5FF")
-            row.pack(fill="x", pady=(5, 0))
-            tk.Label(row, text=label, bg="#F0F5FF", fg=C_SUBTLE,
-                     font=F_SMALL, anchor="w", width=20).pack(side="left")
-            tk.Label(row, textvariable=var, bg="#F0F5FF", fg=color,
-                     font=("Segoe UI", 10, "bold"), anchor="e",
-                     width=4).pack(side="right")
-
-        # update counts whenever source folder changes
-        def _refresh_counts(*_):
-            src = self._sw_src.get().strip()
-            if not src or not os.path.isdir(src):
-                for v in (self._sw_stat_parts, self._sw_stat_asm,
-                          self._sw_stat_drw, self._sw_stat_total):
-                    v.set("—")
-                return
-            try:
-                files = os.listdir(src)
-                parts = sum(1 for f in files if f.lower().endswith(".sldprt"))
-                asm   = sum(1 for f in files if f.lower().endswith(".sldasm"))
-                drw   = sum(1 for f in files if f.lower().endswith(".slddrw"))
-                self._sw_stat_parts.set(str(parts))
-                self._sw_stat_asm.set(str(asm))
-                self._sw_stat_drw.set(str(drw))
-                self._sw_stat_total.set(str(parts + asm + drw))
-            except Exception:
-                for v in (self._sw_stat_parts, self._sw_stat_asm,
-                          self._sw_stat_drw, self._sw_stat_total):
-                    v.set("?")
-
-        self._sw_src.trace_add("write", _refresh_counts)
-
-        # ── fields (left side) ───────────────────────────────────
-        self._field_row(left, "Source Folder",    self._sw_src,      mode="dir")
-        self._field_row(left, "DXF Export Folder",self._sw_dxf_dest, mode="dir")
-
-        # initials row
-        init_row = tk.Frame(left, bg=C_PANEL)
-        init_row.pack(fill="x", pady=4)
-        for lbl, var, w in [("Model DrawnBy", self._sw_model_i, 12),
-                             ("Drawing DwgDrawnBy", self._sw_draw_i, 12)]:
-            tk.Label(init_row, text=lbl, bg=C_PANEL, fg=C_SUBTLE,
-                     font=F_SMALL, anchor="w").pack(side="left", padx=(0, 4))
-            tk.Entry(init_row, textvariable=var, font=F_BODY,
-                     bg="#F8FAFC", fg=C_TEXT,
-                     relief="solid", bd=1, width=w).pack(
-                         side="left", padx=(0, 20))
-
-        # options
-        opt_row = tk.Frame(left, bg=C_PANEL)
-        opt_row.pack(fill="x", pady=(6, 0))
-        for text, var in [("Update custom properties", self._sw_do_props),
-                          ("Export DXFs", self._sw_do_dxf),
-                          ("Skip '003-' files", self._sw_skip003)]:
-            tk.Checkbutton(opt_row, text=text, variable=var,
-                            bg=C_PANEL, fg=C_TEXT, font=F_BODY,
-                            activebackground=C_PANEL,
-                            selectcolor=C_PANEL).pack(
-                                side="left", padx=(0, 20))
-
-        self._action_bar(parent, "sw",
-                         self._run_sw, self._on_stop,
-                         run_label="  Run Batch  ")
-        self._terminal(parent, "sw", rows=15)
-
-    def _run_sw(self):
-        src      = self._sw_src.get().strip()
-        do_props = self._sw_do_props.get()
-        do_dxf   = self._sw_do_dxf.get()
-
-        if not src or not os.path.isdir(src):
-            messagebox.showwarning(APP_TITLE,
-                "Please select a valid source folder.")
-            return
-        if not do_props and not do_dxf:
-            messagebox.showwarning(APP_TITLE,
-                "Please enable at least one task.")
-            return
-        if do_props and (not self._sw_model_i.get().strip()
-                         or not self._sw_draw_i.get().strip()):
-            messagebox.showwarning(APP_TITLE,
-                "Please enter both Model and Drawing initials.")
-            return
-        if do_dxf and not self._sw_dxf_dest.get().strip():
-            messagebox.showwarning(APP_TITLE,
-                "Please select a DXF export folder.")
-            return
-
-        self._active_key = "sw"
-        _stop_event.clear()
-        self._set_running("sw", True)
-        self._set_status("SW Batch — running...")
-
-        opts = {
-            "src": src,
-            "dxf_dest": self._sw_dxf_dest.get().strip(),
-            "model_i": self._sw_model_i.get().strip(),
-            "draw_i": self._sw_draw_i.get().strip(),
-            "skip_003": self._sw_skip003.get(),
-            "do_props": do_props,
-            "do_dxf": do_dxf,
-        }
-        t = threading.Thread(target=self._sw_worker, args=(opts,), daemon=True)
-        self._worker_thread = t
-        t.start()
-
-    def _sw_worker(self, opts: dict):
-        q = self._log_queue
-        log_lines: list[str] = []
-        success = False
-
-        def emit(msg: str, tag: str = "info"):
-            ts = datetime.now().strftime("%H:%M:%S")
-            line = f"[{ts}]  {msg}"
-            log_lines.append(line)
-            q.put((tag, line))
-
-        if pythoncom:
-            pythoncom.CoInitialize()
-
-        try:
-            emit("Connecting to SolidWorks...", "info")
-            if win32com is None:
-                raise RuntimeError(
-                    "pywin32 not available. Install it with:  pip install pywin32")
-
-            sw = win32com.client.Dispatch("SldWorks.Application")
-            emit("Connected to SolidWorks.", "ok")
-
-            src = opts["src"]
-            if not src.endswith("\\"):
-                src += "\\"
-
-            all_files = sorted(
-                f for f in os.listdir(src)
-                if f.lower().endswith((".sldprt", ".sldasm", ".slddrw")))
-            total = len(all_files)
-            emit(f"Found {total} SolidWorks files in source folder.", "info")
-
-            prop_updated = prop_skipped = prop_failed = 0
-            dxf_exported = dxf_skipped = dxf_failed = 0
-
-            for idx, fname in enumerate(all_files):
-                check_stop()
-                q.put(("__progress__",
-                       ("sw", idx, total, f"{idx+1}/{total}: {fname}")))
-
-                if opts["skip_003"] and fname.startswith("003-"):
-                    emit(f"  SKIP  {fname}  (003- prefix)", "muted")
-                    prop_skipped += 1
-                    dxf_skipped  += 1
-                    continue
-
-                fpath   = src + fname
-                is_drw  = fname.lower().endswith(".slddrw")
-                is_part = fname.lower().endswith(".sldprt")
-                prop_r  = "-"
-                dxf_r   = "-"
-
-                if opts["do_props"]:
-                    try:
-                        r = sw_prop_update(
-                            sw, fpath, fname, is_drw,
-                            opts["model_i"], opts["draw_i"], emit)
-                        prop_r = r
-                        if r == "updated":   prop_updated += 1
-                        elif r == "skipped": prop_skipped += 1
-                        else:                prop_failed  += 1
-                    except StopRequested:
-                        raise
-                    except Exception as e:
-                        emit(f"  ERROR  {fname}  props: {e}", "error")
-                        prop_failed += 1
-                        prop_r = "error"
-
-                if opts["do_dxf"] and is_part:
-                    try:
-                        r = sw_dxf_export(
-                            sw, fpath, fname, opts["dxf_dest"], emit)
-                        dxf_r = r
-                        if r == "exported":  dxf_exported += 1
-                        elif r == "skipped": dxf_skipped  += 1
-                        else:                dxf_failed   += 1
-                    except StopRequested:
-                        raise
-                    except Exception as e:
-                        emit(f"  ERROR  {fname}  dxf: {e}", "error")
-                        dxf_failed += 1
-                        dxf_r = "error"
-
-                # single summary line per file
-                parts = []
-                if opts["do_props"]:
-                    parts.append(f"props: {prop_r}")
-                if opts["do_dxf"] and is_part:
-                    parts.append(f"dxf: {dxf_r}")
-                tag = ("ok" if all(x in ("updated","exported","skipped","-")
-                                   for x in (prop_r, dxf_r))
-                       else "error")
-                emit(f"  {fname:<45}  {('  |  '.join(parts))}", tag)
-
-            q.put(("__progress__", ("sw", total, total, "Done")))
-            emit("", "muted")
-            emit(f"Summary", "heading")
-            if opts["do_props"]:
-                emit(f"  Properties   updated {prop_updated}   "
-                     f"skipped {prop_skipped}   failed {prop_failed}", "ok")
-            if opts["do_dxf"]:
-                emit(f"  DXF Export   exported {dxf_exported}   "
-                     f"skipped {dxf_skipped}   failed {dxf_failed}", "ok")
-            success = True
-            emit("SW Batch Update complete.", "ok")
-
-        except StopRequested:
-            emit("Stopped by user.", "warn")
-        except Exception as e:
-            emit(f"FATAL: {e}", "error")
-            for ln in traceback.format_exc().splitlines():
-                emit(ln, "error")
-        finally:
-            if pythoncom:
-                try:
-                    pythoncom.CoUninitialize()
-                except Exception:
-                    pass
-            q.put(("__done__", ("sw", success, "SW Batch Update", log_lines)))
+            row = tk.Frame(info_card, bg=C_PANEL)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text="•", bg=C_PANEL, fg=C_ACCENT,
+                     font=F_BODY).pack(side="left", padx=(0, 8))
+            tk.Label(row, text=bullet, bg=C_PANEL, fg=C_TEXT,
+                     font=F_BODY, anchor="w").pack(side="left")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1666,7 +1457,7 @@ def _dpp_print_excel(file: Path, printer: str, first_sheet_only: bool,
             ps.FitToPagesTall = False
             active.PrintOut(ActivePrinter=printer)
     finally:
-        if wb:
+        if wb is not None:
             try:
                 wb.Close(False)
             except Exception:
@@ -1724,7 +1515,7 @@ def _dpp_sim_excel_to_pdf(file: Path, dest: Path,
             ps.FitToPagesTall = False
             active.ExportAsFixedFormat(0, str(dest))
     finally:
-        if wb:
+        if wb is not None:
             try:
                 wb.Close(False)
             except Exception:
@@ -1874,202 +1665,9 @@ def dpp_build_sections(plan: dict, printer: str,
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  SOLIDWORKS BATCH UPDATE  —  module-level helpers
-# ═════════════════════════════════════════════════════════════════════
-
-SW_DRAWING_PROPS = [
-    "SWFormatSize", "Revision", "Description", "Material", "Finish",
-    "DrawnBy", "DwgDrawnBy", "Bend Deduction", "Top Die", "Bottom Die",
-    "Tol X", "Tol X.X", "Tol X.XX", "Tol X.XXX", "Tol \u00b0",
-]
-
-
-def sw_prop_update(sw, fpath: str, fname: str, is_drawing: bool,
-                   model_i: str, draw_i: str, emit) -> str:
-    """Open file, update properties, save, close. Returns 'updated'/'skipped'/'failed'."""
-    doc_type = 3 if is_drawing else (2 if fname.lower().endswith(".sldasm") else 1)
-
-    # check read-only
-    try:
-        if os.path.exists(fpath) and (os.stat(fpath).st_mode & 0o200 == 0):
-            return "skipped"
-    except Exception:
-        pass
-
-    err_code, warn_code = 0, 0
-    try:
-        model = sw.OpenDoc6(fpath, doc_type, 1, "", err_code, warn_code)
-    except Exception as e:
-        emit(f"    props error — could not open: {e}", "error")
-        return "failed"
-
-    if model is None:
-        emit(f"    props error — OpenDoc6 returned None", "error")
-        return "failed"
-
-    did_change = False
-    try:
-        cpm = model.Extension.CustomPropertyManager("")
-        if cpm is None:
-            emit(f"    props error — no CustomPropertyManager", "error")
-            return "failed"
-
-        if is_drawing:
-            exprs = {}
-            for prop in SW_DRAWING_PROPS:
-                val, resolved = "", ""
-                try:
-                    cpm.Get6(prop, False, val, resolved, False, False)
-                except Exception:
-                    pass
-                exprs[prop] = val
-
-            cur_val = exprs.get("DwgDrawnBy", "").strip()
-            if cur_val == draw_i:
-                return "skipped"
-
-            try:
-                existing = cpm.GetNames()
-                if existing:
-                    for n in existing:
-                        cpm.Delete2(str(n))
-            except Exception:
-                pass
-
-            for prop in SW_DRAWING_PROPS:
-                val = draw_i if prop == "DwgDrawnBy" else exprs.get(prop, "")
-                try:
-                    cpm.Add3(prop, 30, val, 2)
-                except Exception:
-                    pass
-            did_change = True
-
-        else:
-            val, resolved = "", ""
-            try:
-                cpm.Get6("DrawnBy", False, val, resolved, False, False)
-            except Exception:
-                pass
-            if resolved.strip() == model_i or val.strip() == model_i:
-                return "skipped"
-            try:
-                cpm.Add3("DrawnBy", 30, model_i, 2)
-            except Exception:
-                try:
-                    cpm.Set2("DrawnBy", model_i)
-                except Exception as e:
-                    emit(f"    props error — could not set DrawnBy: {e}", "error")
-                    return "failed"
-            did_change = True
-
-        if did_change:
-            save_err, save_warn = 0, 0
-            model.SetSaveFlag()
-            model.Save3(1, save_err, save_warn)
-            if save_err != 0:
-                emit(f"    props error — save failed ({save_err})", "error")
-                return "failed"
-            return "updated"
-        return "skipped"
-
-    finally:
-        try:
-            sw.CloseDoc(model.GetTitle())
-        except Exception:
-            pass
-
-
-def sw_dxf_export(sw, fpath: str, fname: str,
-                  dest_folder: str, emit) -> str:
-    """Open part, analyse sheet metal, export DXF. Returns 'exported'/'skipped'/'failed'."""
-    err_code, warn_code = 0, 0
-    try:
-        model = sw.OpenDoc6(fpath, 1, 1, "", err_code, warn_code)
-    except Exception as e:
-        emit(f"    dxf error — could not open: {e}", "error")
-        return "failed"
-
-    if model is None:
-        emit(f"    dxf error — OpenDoc6 returned None", "error")
-        return "failed"
-
-    try:
-        # analyse features
-        has_sm = False
-        has_bends = False
-        fp_name = ""
-        rolled_back = False
-
-        feat = model.FirstFeature()
-        while feat is not None:
-            ft = feat.GetTypeName2().lower()
-            if ft == "sheetmetal":
-                has_sm = True
-            if ft == "flatpattern" and not fp_name:
-                fp_name = feat.Name
-            if ft in ("edgeflange", "sketchbend", "foldfeature", "jog",
-                       "loftbend", "baseflangewall", "hem", "miterflange",
-                       "crossbreak", "smbaseflangewall"):
-                has_bends = True
-            if feat.IsRolledBack:
-                rolled_back = True
-            feat = feat.GetNextFeature()
-
-        if not has_sm:
-            return "skipped"
-
-        # check multiple configs
-        try:
-            configs = model.GetConfigurationNames()
-            user_configs = [c for c in (configs or [])
-                            if "flat-pattern" not in c.upper()
-                            and "SM-FLAT-PATTERN" not in c.upper()]
-            if len(user_configs) > 1:
-                return "skipped"
-        except Exception:
-            pass
-
-        if rolled_back:
-            try:
-                model.ForceRebuild3(True)
-            except Exception:
-                pass
-
-        if has_bends and fp_name:
-            flat_feat = model.FeatureByName(fp_name)
-            if flat_feat:
-                model.ClearSelection2(True)
-                if flat_feat.Select2(False, 0):
-                    model.EditUnsuppress2()
-                model.ForceRebuild3(True)
-
-        base_name = fname.rsplit(".", 1)[0]
-        if not dest_folder.endswith("\\"):
-            dest_folder += "\\"
-        dxf_path = dest_folder + base_name + ".dxf"
-
-        align = [0.0] * 12
-        align[3] = align[7] = align[11] = 1.0
-
-        part = win32com.client.CastTo(model, "IPartDoc")
-        ok = part.ExportToDWG2(dxf_path, fpath, 1, True, align,
-                                False, False, 71, None)
-        if ok:
-            return "exported"
-        else:
-            emit(f"    dxf error — ExportToDWG2 returned False", "error")
-            return "failed"
-
-    finally:
-        try:
-            sw.CloseDoc(model.GetTitle())
-        except Exception:
-            pass
-
-
-# ═════════════════════════════════════════════════════════════════════
 #  ENTRY POINT
 # ═════════════════════════════════════════════════════════════════════
+
 
 def main():
     root = tk.Tk()
