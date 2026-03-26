@@ -561,6 +561,11 @@ class App:
                     self._set_progress(key, v, mx, lbl)
                 elif tag == "__status__":
                     self._set_status(payload)
+                elif tag == "__cnc_mark_done__":
+                    key, success, tool_name, ll = payload
+                    self._cnc_mark_btn.configure(state="normal")
+                    _master_log.append_section(tool_name, ll)
+                    self._set_status(f"{tool_name} — {'done' if success else 'errors'}")
                 elif tag == "__print_confirm__":
                     count, names = payload
                     detail = f"{count} document(s): " + ",  ".join(names[:5])
@@ -627,6 +632,22 @@ class App:
 
         self._action_bar(parent, "bom", self._run_bom, self._on_stop,
                          run_label="  Run BOM Check  ")
+
+        # ── CNC Column Marker ─────────────────────────────────────────
+        cnc_card = self._card(parent, "CNC Column Marker")
+        tk.Label(cnc_card,
+                 text="Scans the 205 CNC folder and marks column H in the active BOM sheet.\n"
+                      "CNC folder is auto-detected from the BOM path (200 Mech → 205 CNC).",
+                 bg=C_PANEL, fg=C_SUBTLE, font=F_SMALL, justify="left").pack(anchor="w", pady=(0, 8))
+        self._cnc_mark_btn = tk.Button(
+            cnc_card, text="  Mark CNC Column  ",
+            bg=C_ACCENT, fg="#FFFFFF",
+            activebackground=C_ACCENT_H, activeforeground="#FFFFFF",
+            font=("Segoe UI", 10, "bold"),
+            relief="flat", padx=16, pady=6, cursor="hand2",
+            command=self._run_cnc_mark)
+        self._cnc_mark_btn.pack(anchor="w")
+
         self._terminal(parent, "bom", rows=15)
 
     def _run_bom(self):
@@ -822,6 +843,181 @@ class App:
                 emit(ln, "error")
         finally:
             q.put(("__done__", ("bom", success, "BOM Check", log_lines)))
+
+    # ── CNC Column Marker ─────────────────────────────────────────────
+
+    def _run_cnc_mark(self):
+        wb = self._bom_wb.get().strip()
+        if not wb:
+            messagebox.showwarning(APP_TITLE, "Please select a BOM workbook first.")
+            return
+        if not os.path.isfile(wb):
+            messagebox.showwarning(APP_TITLE, f"File not found:\n{wb}")
+            return
+
+        confirmed = messagebox.askyesno(
+            APP_TITLE,
+            "CNC Column Marker requires the workbook to be CLOSED in Excel.\n\n"
+            "Have you closed the workbook and are ready to proceed?",
+        )
+        if not confirmed:
+            return
+
+        tgt = self._bom_target.get().strip()
+        if not tgt or not os.path.isdir(tgt):
+            messagebox.showwarning(APP_TITLE,
+                "Please select a valid Target Folder — the CNC folder is "
+                "looked up as a sibling of that folder.")
+            return
+
+        self._active_key = "bom"
+        _stop_event.clear()
+        self._cnc_mark_btn.configure(state="disabled")
+        self._set_status("CNC Column Marker — running...")
+
+        t = threading.Thread(
+            target=self._bom_cnc_worker, args=(wb, tgt), daemon=True)
+        t.start()
+
+    def _bom_cnc_worker(self, wb_path: str, target_folder: str):
+        q = self._log_queue
+        log_lines: list[str] = []
+        success = False
+        xw_app = None
+        wb_obj  = None
+
+        def emit(msg: str, tag: str = "info"):
+            ts = datetime.now().strftime("%H:%M:%S")
+            line = f"[{ts}]  {msg}"
+            log_lines.append(line)
+            q.put((tag, line))
+
+        try:
+            if xw is None:
+                raise RuntimeError("xlwings is not installed. Run:  pip install xlwings")
+
+            wb_path_obj = Path(wb_path)
+            emit(f"Opening workbook: {wb_path_obj.name}", "heading")
+            xw_app = xw.App(visible=False, add_book=False)
+            xw_app.display_alerts = False
+            xw_app.screen_updating = False
+
+            try:
+                wb_obj = xw_app.books.open(wb_path)
+            except Exception as e:
+                raise RuntimeError(f"Could not open workbook: {e}")
+
+            sheet_names = [s.name for s in wb_obj.sheets]
+            if BOM_SHEET_NAME not in sheet_names:
+                raise RuntimeError(
+                    f"Sheet '{BOM_SHEET_NAME}' not found. "
+                    f"Available: {sheet_names}")
+
+            ws = wb_obj.sheets[BOM_SHEET_NAME]
+            DATA_START = 6
+
+            # Find last row with data in column A
+            last_row = ws.range(f"A{DATA_START}").end("down").row
+            if last_row > 1_000_000:
+                last_row = DATA_START
+
+            # Read column A and H in bulk
+            col_a = ws.range(f"A{DATA_START}:A{last_row}").value
+            col_h = ws.range(f"H{DATA_START}:H{last_row}").value
+            if not isinstance(col_a, list):
+                col_a = [col_a]
+            if not isinstance(col_h, list):
+                col_h = [col_h]
+
+            # Find CNC folder as a sibling of the target folder starting with "205"
+            tgt_path = Path(target_folder)
+            cnc_folder = next(
+                (d for d in tgt_path.parent.iterdir()
+                 if d.is_dir() and d.name.lower().startswith("205")),
+                None,
+            )
+            if cnc_folder is None:
+                raise RuntimeError(
+                    f"No folder starting with '205' found next to:\n{tgt_path}")
+            emit(f"CNC folder: {cnc_folder}", "info")
+
+            # Enumerate PDF files in CNC folder (top-level only, skip subfolders and Merged)
+            cnc_pdfs = [
+                f for f in cnc_folder.iterdir()
+                if f.is_file()
+                and f.suffix.lower() == ".pdf"
+                and "merged" not in f.name.lower()
+            ]
+            emit(f"Found {len(cnc_pdfs)} CNC PDFs (excluding Merged files)", "info")
+
+            # Parse part numbers from each CNC PDF filename
+            emit("Parsing CNC filenames...", "info")
+            cnc_parts: dict[str, Path] = {}   # part_number -> source file
+            for pdf in cnc_pdfs:
+                parts = _cnc_parse_filename(pdf, emit)
+                for pn in parts:
+                    cnc_parts[pn] = pdf
+
+            emit(f"Resolved {len(cnc_parts)} unique part numbers from CNC folder", "info")
+
+            # Walk BOM rows and mark column H
+            emit("Matching BOM rows to CNC parts...", "heading")
+            matched_rows: list[int] = []
+            unmatched_parts: list[str] = []
+
+            for i, pn_raw in enumerate(col_a):
+                if not pn_raw or not str(pn_raw).strip():
+                    continue
+                pn_str = str(pn_raw).strip()
+                row_idx = DATA_START + i
+
+                # Skip rows already marked S in column H
+                h_val = col_h[i] if i < len(col_h) else None
+                if h_val and str(h_val).strip().upper() == "S":
+                    continue
+
+                pn_clean = _cnc_strip_rev(pn_str)
+
+                if pn_clean in cnc_parts:
+                    ws.range(f"H{row_idx}").value = "X"
+                    matched_rows.append(row_idx)
+                    emit(f"  row {row_idx}  {pn_str:<28}  → X  ({cnc_parts[pn_clean].name})", "ok")
+                else:
+                    unmatched_parts.append(pn_str)
+
+            emit(f"Marked {len(matched_rows)} rows.", "info")
+
+            if unmatched_parts:
+                emit(f"{len(unmatched_parts)} BOM row(s) with no CNC match:", "warn")
+                for pn in unmatched_parts:
+                    emit(f"  - {pn}", "warn")
+
+            wb_obj.save()
+            emit("Workbook saved.", "ok")
+            wb_obj.close()
+            xw_app.quit()
+            xw_app = None
+
+            if unmatched_parts:
+                emit("Some rows unmatched — review the list above.", "warn")
+            else:
+                emit("All non-S rows matched. Done.", "ok")
+
+            success = True
+
+        except StopRequested:
+            emit("Stopped by user.", "warn")
+        except Exception as e:
+            emit(f"ERROR: {e}", "error")
+            for ln in traceback.format_exc().splitlines():
+                emit(ln, "error")
+        finally:
+            try:
+                if xw_app:
+                    xw_app.quit()
+            except Exception:
+                pass
+            q.put(("__cnc_mark_done__", ("bom", success, "CNC Column Marker", log_lines)))
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1094,7 +1290,7 @@ class App:
             self._dpp_confirm_bar.pack_forget()
         term = self._panel_terms.get("dpp")
         if term:
-            self._term_write(term, "Plan cleared.", "muted")
+            self._term_write(term, "Plan cleared.", "info")
 
     def _run_dpp(self):
         folder  = self._dpp_folder.get().strip()
@@ -1128,7 +1324,7 @@ class App:
         # Write summary to terminal
         summary = dpp_make_summary(plan, printer, sim)
         if term:
-            self._term_write(term, summary, "muted")
+            self._term_write(term, summary, "info")
 
         # Store plan + params and show inline confirm bar
         self._dpp_plan    = plan
@@ -1328,7 +1524,7 @@ class App:
                     except Exception as e:
                         emit(f"     ✗  {e}", "error")
                     if i < print_total - 1:
-                        time.sleep(3.5)
+                        time.sleep(1.0)   # small buffer after Acrobat closes
 
                 q.put(("__progress__",
                        ("dpp", gen_total + print_total, gen_total + print_total, "Done")))
@@ -1501,27 +1697,31 @@ class App:
         self._mp_canvas.configure(scrollregion=self._mp_canvas.bbox("all"))
 
     def _mp_print_one(self, entry: dict):
+        # Capture values on the main thread before handing off
         printer = self._dpp_printer.get().strip()
         path    = entry["path"]
         duplex  = entry["duplex_var"].get()
-        term    = self._panel_terms.get("dpp")
         acrobat = _find_acrobat()
         self._active_key = "dpp"
+        term = self._panel_terms.get("dpp")
         if term:
             self._term_write(term,
                 f"Manual print: {path.name}  ({'duplex' if duplex else 'simplex'})", "info")
-        try:
-            if win32print and printer:
-                try:
-                    win32print.SetDefaultPrinter(printer)
-                except Exception:
-                    pass
-            status = _dpp_acrobat_print(path, printer, duplex, acrobat)
-            if term:
-                self._term_write(term, f"  ✓  {status}", "ok")
-        except Exception as e:
-            if term:
-                self._term_write(term, f"  ✗  {e}", "error")
+        q = self._log_queue
+
+        def _do_print():
+            try:
+                if win32print and printer:
+                    try:
+                        win32print.SetDefaultPrinter(printer)
+                    except Exception:
+                        pass
+                status = _dpp_acrobat_print(path, printer, duplex, acrobat)
+                q.put(("ok", f"  ✓  {status}"))
+            except Exception as e:
+                q.put(("error", f"  ✗  {e}"))
+
+        threading.Thread(target=_do_print, daemon=True).start()
 
     def _mp_print_all(self):
         if not self._mp_files:
@@ -1551,7 +1751,7 @@ class App:
                 except Exception as e:
                     q.put(("error", f"  ✗  {e}"))
                 if i < total - 1:
-                    time.sleep(3.5)
+                    time.sleep(1.0)   # small buffer after Acrobat closes
             q.put(("ok", "Print All complete."))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1643,6 +1843,13 @@ def _dpp_match_fwo(folder: Path) -> Path:
     raise RuntimeError("Fabrication Work Order PDF not found in 300 Inputs.")
 
 
+def _dpp_revision_letter(p: Path) -> str:
+    """Extract the revision letter from a filename like 'J12345 rB BOM.xlsx'.
+    Matches ' rA', ' rB', etc. (case-insensitive). Returns '' if not found."""
+    m = re.search(r'\br([A-Za-z])\b', p.stem)
+    return m.group(1).upper() if m else ""
+
+
 def _dpp_match_excel(folder: Path, token: str, title: str,
                      app: "App") -> Path:
     matches = [f for f in _dpp_list_files(folder)
@@ -1652,9 +1859,12 @@ def _dpp_match_excel(folder: Path, token: str, title: str,
         raise RuntimeError(f"No Excel file containing '{token}' found in {title}.")
     if len(matches) == 1:
         return matches[0]
-    choice = app._pick_from_list(
-        f"Select {title}",
-        [f.name for f in matches])
+    # Auto-select latest revision (rA < rB < rC ...) when revision info is present
+    with_rev = [(f, _dpp_revision_letter(f)) for f in matches]
+    if any(rev for _, rev in with_rev):
+        return max(with_rev, key=lambda x: x[1])[0]
+    # No revision info — fall back to user prompt
+    choice = app._pick_from_list(f"Select {title}", [f.name for f in matches])
     if not choice:
         raise RuntimeError(f"{title} selection cancelled.")
     return next(f for f in matches if f.name == choice)
@@ -1931,15 +2141,22 @@ def _dpp_acrobat_print(pdf_path: Path, printer_name: str, duplex: bool,
     mode_str = ("duplex" if duplex else "simplex") + ("" if devmode_ok else " [devmode failed]")
 
     if acrobat_exe:
-        subprocess.Popen(
-            [acrobat_exe, "/t", str(pdf_path), printer_name],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        try:
+            # subprocess.run is BLOCKING — Acrobat must fully close before we return.
+            # This guarantees print ORDER (no race to the spooler) and correct DUPLEX
+            # (next DEVMODE change only happens after the previous Acrobat instance exits).
+            subprocess.run(
+                [acrobat_exe, "/t", str(pdf_path), printer_name],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            pass   # Acrobat hung — job was likely submitted; move on
         return f"sent via Acrobat ({mode_str})"
     else:
         os.startfile(str(pdf_path), "print")
-        return f"sent via default handler ({mode_str})"
+        return f"sent via default handler (no duplex control)"
 
 
 def dpp_build_plan(job_folder: Path, app: "App") -> dict:
@@ -2174,6 +2391,130 @@ def dpp_build_sections(plan: dict, out_dir: Path) -> list:
     sections.append(("Cleanup Excel", quit_xl))
 
     return sections
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  CNC COLUMN MARKER HELPERS
+# ═════════════════════════════════════════════════════════════════════
+
+# Revision suffix patterns:  "rB"  or  " rB"  at end of string
+_CNC_REV_RE = re.compile(r"\s*r[A-Za-z]$", re.IGNORECASE)
+
+# Recognised prefix families that appear directly in CNC filenames
+_CNC_DIRECT_PREFIXES = re.compile(
+    r"^(240|250|200|295|210|220|230|260|270|280|290)-(\d+)")
+
+# Bare digit segment (no prefix): prepend "240-"
+_CNC_BARE_DIGITS = re.compile(r"^\d+$")
+
+# J-prefix GALV files
+_CNC_J_PREFIX = re.compile(r"^J\d+", re.IGNORECASE)
+
+# DRAWING NUMBER line in GALV PDF text
+_CNC_DRAWING_NO_RE = re.compile(
+    r"DRAWING\s+NUMBER\s*:\s*([0-9]{3}-[0-9]+(?:\s*r[A-Za-z])?)", re.IGNORECASE)
+
+
+def _cnc_strip_rev(s: str) -> str:
+    """Remove trailing revision suffix (e.g. ' rB', 'rC') from a part number string."""
+    return _CNC_REV_RE.sub("", s).strip()
+
+
+def _cnc_parts_from_rest(prefix: str, rest: str) -> list[str]:
+    """
+    Given the prefix family (e.g. '240') and the remainder of a CNC filename
+    after the leading NNN-XXXXX segment, extract additional part numbers.
+
+    Segments separated by '_' that are all-digit become additional part numbers
+    under the same prefix.  Non-digit segments end the scan.
+    """
+    parts: list[str] = []
+    for seg in rest.split("_"):
+        seg = seg.strip()
+        if not seg:
+            continue
+        if _CNC_BARE_DIGITS.match(seg):
+            parts.append(f"{prefix}-{seg}")
+        else:
+            break   # stop at first non-digit token (description text)
+    return parts
+
+
+def _cnc_extract_galv_parts(pdf_path: Path) -> list[str]:
+    """
+    Open a GALV-style PDF (J##### prefix) with PyMuPDF and return all part
+    numbers found on 'DRAWING NUMBER: NNN-XXXXX' lines, stripped of revisions.
+    Returns [] if fitz is unavailable or the file can't be read.
+    """
+    if _fitz is None:
+        return []
+    parts: list[str] = []
+    try:
+        doc = _fitz.open(str(pdf_path))
+        for page in doc:
+            text = page.get_text()
+            for m in _CNC_DRAWING_NO_RE.finditer(text):
+                raw = m.group(1).strip()
+                pn = _cnc_strip_rev(raw)
+                if pn and pn not in parts:
+                    parts.append(pn)
+        doc.close()
+    except Exception:
+        pass
+    return parts
+
+
+def _cnc_parse_filename(pdf_path: Path, emit=None) -> list[str]:
+    """
+    Parse a CNC PDF filename and return a list of clean part numbers (no revisions).
+
+    Rules (in order):
+      1. Skip files containing 'Merged' (caller should already filter these).
+      2. J-prefix → open PDF, extract DRAWING NUMBER lines.
+      3. NNN-XXXXX direct prefix → parse stem; additional _DIGIT segments = more PNs.
+      4. Bare digits → prepend '240-'.
+      5. Unrecognised → skip with a warning.
+    """
+    stem = pdf_path.stem   # filename without extension
+
+    # Strip trailing revision from the stem itself before analysing
+    stem_clean = _CNC_REV_RE.sub("", stem).strip()
+
+    # Rule 2 — GALV / J-prefix
+    if _CNC_J_PREFIX.match(stem_clean):
+        parts = _cnc_extract_galv_parts(pdf_path)
+        if emit:
+            if parts:
+                emit(f"  {pdf_path.name}  →  GALV  {parts}", "info")
+            else:
+                emit(f"  {pdf_path.name}  →  GALV  (no DRAWING NUMBER lines found)", "warn")
+        return parts
+
+    # Rule 3 — direct prefix NNN-XXXXX[_more]
+    m = _CNC_DIRECT_PREFIXES.match(stem_clean)
+    if m:
+        prefix = m.group(1)   # e.g. "240"
+        first_num = m.group(2)
+        first_pn = f"{prefix}-{first_num}"
+        rest = stem_clean[m.end():]   # everything after the first NNN-XXXXX
+        extra = _cnc_parts_from_rest(prefix, rest)
+        parts = [first_pn] + extra
+        if emit:
+            emit(f"  {pdf_path.name}  →  {parts}", "info")
+        return parts
+
+    # Rule 4 — bare digits
+    if _CNC_BARE_DIGITS.match(stem_clean):
+        pn = f"240-{stem_clean}"
+        if emit:
+            emit(f"  {pdf_path.name}  →  {[pn]}", "info")
+        return [pn]
+
+    # Rule 5 — unrecognised
+    if emit:
+        emit(f"  {pdf_path.name}  →  unrecognised pattern — skipped", "warn")
+    return []
+
 
 
 # ═════════════════════════════════════════════════════════════════════
