@@ -7,12 +7,36 @@ FoxFab internal engineering utilities combined into a single Windows desktop app
 ## Tools
 
 ### BOM Check
-Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) in two passes:
+Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) in two passes, then optionally marks which parts have CNC files.
 
 - **Pass 1 — Stock Parts Check:** Searches the Stock Parts folder (`Z:\...`) using Everything CLI (`es.exe`) and marks matching rows in the `FFMPL` sheet (columns B, G, H).
 - **Pass 2 — Non-Stock PDF/DXF Copy:** For every non-stock part, finds the highest-revision PDF and DXF and copies them to a target folder (typically `202 PDFs_Flats`). Column G is marked if either file was found.
 
 > **Requirement:** Excel must be **closed** before running. The app warns you and asks for confirmation.
+
+#### CNC Column Marker
+After running BOM Check, click **Mark CNC Column** to scan the `205 CNC` folder and mark column H in the `FFMPL` sheet with `X` for every BOM part that has a matching CNC file.
+
+**How the CNC folder is found:**
+The folder is located automatically as a sibling of the Target Folder whose name starts with `205` — for example, if Target Folder is `…/J12345-01/202 PDFs_Flats`, the tool looks for `…/J12345-01/205 CNC`.
+
+**Filename parsing rules:**
+
+| File pattern | How it's handled |
+|---|---|
+| `90004.pdf` | Bare digits → interpreted as `240-90004` |
+| `250-90002.pdf` | Direct prefix `NNN-XXXXX` → matched as-is |
+| `240-31209_31211.pdf` | Multi-part → parsed as `240-31209` **and** `240-31211` |
+| `250-30089 rA.pdf` | Revision suffix stripped → matched as `250-30089` |
+| `J15302-01_14GALV.pdf` | GALV / J-prefix → PDF opened with PyMuPDF, all `DRAWING NUMBER:` lines extracted |
+| `CNC_Simplex_Merged.pdf` | Skipped — filename contains "Merged" |
+| Subfolders (e.g. `archive\`) | Skipped — only top-level files are scanned |
+
+**Behaviour after matching:**
+- Rows where column H already contains `S` (stock) are skipped entirely.
+- Every matched row gets `X` written to column H.
+- Any non-S BOM rows with no matching CNC file are listed in the terminal as warnings.
+- The workbook is always saved via xlwings (COM) so all table formatting and structured styles are preserved.
 
 ---
 
@@ -24,7 +48,9 @@ Builds a manufacturing packet from a job folder and sends it to the FoxFab print
 2. Review the plan in the terminal, then click **Generate Documents** (or **Start Simulation** in sim mode).
 3. All PDFs are generated first into a temp folder.
 4. In print mode, a second amber confirmation bar appears listing the documents ready to send.
-5. Click **Send to Printer** to print them in order with a 3.5-second gap between each, or **Cancel Print** to abort.
+5. Click **Send to Printer** to print them in order with a 1-second gap between each, or **Cancel Print** to abort.
+
+> The 1-second gap is a safety buffer. Because Acrobat is launched in **blocking mode** (`subprocess.run`), each document fully closes before the next one is sent — this guarantees correct print order and per-document duplex settings.
 
 #### Print order
 | # | Document | Notes |
@@ -43,7 +69,10 @@ Printing uses **Adobe Acrobat** (`Acrobat.exe /t`) for per-document duplex contr
 - CNC duplex files → **duplex** (long-edge binding)
 - All other documents → **simplex**
 
-Duplex is set via Windows per-user DEVMODE (level 9 — no admin rights required). Acrobat is located automatically from common installation paths. If not found, falls back to `os.startfile`.
+Duplex is set via Windows per-user DEVMODE (level 9 — no admin rights required). Because Acrobat is launched in blocking mode, DEVMODE is always applied before the next document starts. Acrobat is located automatically from common installation paths. If not found, falls back to `os.startfile`.
+
+#### BOM revision auto-selection
+If a job folder contains multiple BOM Excel files (e.g. after a re-release), the app automatically picks the one with the **highest revision letter** (`rA < rB < rC …`). If no revision suffix is found in any filename, a pick-list prompt is shown as a fallback.
 
 #### FWO auto-fill
 The Fabrication Work Order PDF is filled automatically using data read from the job's PRF Excel file:
@@ -58,8 +87,8 @@ Checkbox toggle — saves all generated PDFs to a timestamped folder next to the
 A **▶ Manual Printing** toggle at the bottom of the panel expands a file list for debug/testing:
 - Add individual PDFs via file picker
 - Set duplex per file with a checkbox
-- **Print** button sends a single file immediately
-- **Print All** sends all files in list order with 3.5-second gaps
+- **Print** button sends a single file immediately (dispatched to a background thread so the UI stays responsive)
+- **Print All** sends all files in list order with 1-second gaps between each
 - Shares the same printer field and terminal as Doc Prep & Print
 
 ---
@@ -91,15 +120,15 @@ References the SolidWorks macro for batch updating custom properties and exporti
 | Dependency | Purpose |
 |---|---|
 | Python 3.10+ | Runtime |
-| `xlwings` | Excel COM automation (BOM Check, PDF export) |
+| `xlwings` | Excel COM automation (BOM Check, CNC Marker, PDF export) |
 | `pypdf` | PDF merging |
-| `pymupdf` | FWO text overlay (auto-fill) |
+| `pymupdf` | FWO text overlay + GALV PDF part number extraction |
 | `openpyxl` | PRF Excel data reading (no COM needed) |
 | `pywin32` | Windows COM + print API |
 | `pyinstaller` | Building the `.exe` |
 | `es.exe` | Everything CLI for fast file search (BOM Check) |
 | Adobe Acrobat 2017+ (installed) | Per-document duplex printing via `/t` flag |
-| Microsoft Excel (installed) | BOM Check + PDF export via xlwings |
+| Microsoft Excel (installed) | BOM Check + CNC Marker + PDF export via xlwings |
 
 Install Python dependencies:
 ```
@@ -157,16 +186,16 @@ Engineering Tool Hub\
 If the auto-filled text on the Fabrication Work Order lands in the wrong position after a test print, adjust the constants near the top of `app.py`:
 
 ```python
-FWO_JOB_NO_X    = 152   # x position for Job No. value
-FWO_JOB_NO_Y    = 138   # y position for Job No. value  (decrease = move up)
-FWO_JOB_NAME_X  = 148
-FWO_JOB_NAME_Y  = 160
-FWO_DATE_X      = 140
-FWO_DATE_Y      = 178
-FWO_ENCLOSURE_X = 140
-FWO_ENCLOSURE_Y = 213
-FWO_UNITS_X     = 140
-FWO_UNITS_Y     = 261
+FWO_JOB_NO_X    = 165   # x position for Job No. value
+FWO_JOB_NO_Y    = 145   # y position for Job No. value  (decrease = move up)
+FWO_JOB_NAME_X  = 165
+FWO_JOB_NAME_Y  = 165
+FWO_DATE_X      = 165
+FWO_DATE_Y      = 182
+FWO_ENCLOSURE_X = 165
+FWO_ENCLOSURE_Y = 210
+FWO_UNITS_X     = 165
+FWO_UNITS_Y     = 245
 FWO_FONT_SIZE   = 11    # pt
 ```
 
@@ -177,6 +206,6 @@ Use the **Preview FWO** button to see changes instantly without running a full p
 ## Notes
 
 - The preferred printer name is hardcoded as `PREFERRED_PRINTER` in `app.py`. Update this constant if the printer name changes.
-- BOM Check requires Excel to be **closed** — xlwings opens the file via COM in the background.
+- BOM Check and CNC Column Marker both require Excel to be **closed** — xlwings opens the file via COM in the background.
 - Acrobat is searched in common install paths automatically. If installed in a non-standard location, add the path to `ACROBAT_SEARCH_PATHS` in `app.py`.
 - The `logs/` folder is excluded from git (see `.gitignore`). Log files are local only.
