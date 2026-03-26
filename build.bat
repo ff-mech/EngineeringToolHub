@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableDelayedExpansion
-cd /d "%~dp0"
+pushd "%~dp0"
 
 :: ================================================================
 ::  Engineering Tool Hub  —  build.bat
@@ -18,13 +18,14 @@ echo.
 python --version >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found. Make sure Python is on your PATH.
-    pause
+    popd
+pause
     exit /b 1
 )
 
 :: Install / upgrade dependencies
 echo  [1/4]  Installing dependencies...
-python -m pip install --quiet --upgrade pyinstaller xlwings pypdf pywin32
+python -m pip install --quiet --upgrade pyinstaller xlwings pypdf pywin32 pymupdf openpyxl
 if errorlevel 1 (
     echo  [ERROR] pip install failed. Check your internet connection or proxy.
     pause
@@ -78,6 +79,8 @@ python -m PyInstaller ^
     --hidden-import "tkinter.ttk" ^
     --hidden-import "tkinter.filedialog" ^
     --hidden-import "tkinter.messagebox" ^
+    --hidden-import "fitz" ^
+    --hidden-import "openpyxl" ^
     !ADD_ES! ^
     app.py
 

@@ -46,6 +46,16 @@ except Exception:
     PdfReader = None
     PdfWriter = None
 
+try:
+    import fitz as _fitz   # PyMuPDF — FWO text overlay
+except Exception:
+    _fitz = None
+
+try:
+    import openpyxl as _openpyxl   # PRF data reading (no COM needed)
+except Exception:
+    _openpyxl = None
+
 
 # ═════════════════════════════════════════════════════════════════════
 #  CONSTANTS
@@ -54,11 +64,36 @@ except Exception:
 APP_TITLE   = "Engineering Tool Hub"
 APP_VERSION = "1.0.0"
 
-PREFERRED_PRINTER  = "FoxFab (Konica Bizhub C360i) on NPSVR05"
+PREFERRED_PRINTER  = r"\\NPSVR05\FoxFab (Konica Bizhub C360i)"
 STOCK_PARTS_FOLDER = r"Z:\FOXFAB_DATA\ENGINEERING\0 PRODUCTS\300 Stock Parts\PDFs & Flats"
+
+# ── Adobe Acrobat executable search paths (used for duplex-aware printing)
+ACROBAT_SEARCH_PATHS = [
+    r"C:\Program Files (x86)\Adobe\Acrobat 2017\Acrobat\Acrobat.exe",
+    r"C:\Program Files\Adobe\Acrobat 2017\Acrobat\Acrobat.exe",
+    r"C:\Program Files (x86)\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+    r"C:\Program Files\Adobe\Acrobat DC\Acrobat\Acrobat.exe",
+    r"C:\Program Files (x86)\Adobe\Acrobat 2020\Acrobat\Acrobat.exe",
+    r"C:\Program Files\Adobe\Acrobat 2020\Acrobat\Acrobat.exe",
+]
 BOM_SHEET_NAME     = "FFMPL"
 EXCEL_EXTENSIONS   = {".xlsx", ".xls", ".xlsm"}
 PDF_EXTENSIONS     = {".pdf", ".PDF"}
+
+# ── FWO auto-fill field positions (PDF points; Y increases downward, origin top-left)
+# ── Tune these if text lands in the wrong spot after a test print.
+# ── Each field has its own X so they can be nudged independently.
+FWO_JOB_NO_X    = 165   # x: JOB NO. value  (slightly right of label)
+FWO_JOB_NO_Y    = 145 # y: JOB NO. value  (above the box rule)
+FWO_JOB_NAME_X  = 165   # x: JOB NAME value (slightly right)
+FWO_JOB_NAME_Y  = 165   # y: JOB NAME value (above the box rule, nudged up)
+FWO_DATE_X      = 165   # x: DATE value
+FWO_DATE_Y      = 182   # y: DATE value     (above the box rule)
+FWO_ENCLOSURE_X = 165   # x: ENCLOSURE value
+FWO_ENCLOSURE_Y = 210   # y: ENCLOSURE value (above the box rule)
+FWO_UNITS_X     = 165   # x: TOTAL UNITS value
+FWO_UNITS_Y     = 245   # y: TOTAL UNITS value (above the box rule)
+FWO_FONT_SIZE   = 11    # pt — match the form's body text size
 
 # Sidebar
 C_SIDEBAR   = "#1E2B40"
@@ -203,6 +238,7 @@ class App:
         self._active_term: tk.Text | None = None
         self._panel_ui: dict[str, dict] = {}   # key -> {run, stop, progress, lbl}
         self._panel_terms: dict[str, tk.Text] = {}
+        self._panel_term_frames: dict[str, tk.Frame] = {}  # key -> terminal outer wrap
 
         self._configure_styles()
         self._build_layout()
@@ -464,6 +500,7 @@ class App:
         t.tag_configure("muted",   foreground=C_TERM_MUTE)
 
         self._panel_terms[key] = t
+        self._panel_term_frames[key] = wrap
         return t
 
     # ── terminal write ────────────────────────────────────────────────
@@ -517,12 +554,22 @@ class App:
                 item = self._log_queue.get_nowait()
                 tag, payload = item
                 if tag == "__done__":
+                    self._dpp_print_bar.pack_forget()
                     self._on_worker_done(*payload)
                 elif tag == "__progress__":
                     key, v, mx, lbl = payload
                     self._set_progress(key, v, mx, lbl)
                 elif tag == "__status__":
                     self._set_status(payload)
+                elif tag == "__print_confirm__":
+                    count, names = payload
+                    detail = f"{count} document(s): " + ",  ".join(names[:5])
+                    if len(names) > 5:
+                        detail += f"  … +{len(names)-5} more"
+                    self._dpp_print_detail.config(text=detail)
+                    self._dpp_print_bar.pack(
+                        fill="x", padx=26, pady=(4, 0),
+                        before=self._panel_term_frames["dpp"])
                 else:
                     term = self._panel_terms.get(self._active_key)
                     if term:
@@ -793,6 +840,8 @@ class App:
         self._dpp_printer = tk.StringVar(value=PREFERRED_PRINTER)
         self._dpp_sim     = tk.BooleanVar(value=False)
         self._dpp_plan: dict | None = None
+        self._dpp_print_event = threading.Event()
+        self._dpp_last_print_dir: Path | None = None   # cleaned up on next run
 
         self._field_row(card, "Job Folder", self._dpp_folder, mode="dir")
 
@@ -827,9 +876,140 @@ class App:
         self._action_bar(
             parent, "dpp",
             self._run_dpp, self._on_stop,
-            run_label="  Build Plan & Run  ",
-            extras=[("Clear Plan", self._dpp_clear_plan)],
+            run_label="  Build Plan  ",
+            extras=[("Clear Plan", self._dpp_clear_plan),
+                    ("Preview FWO", self._dpp_test_fwo_fill)],
         )
+
+        # ── Confirm bar 1: plan review — hidden until plan is built ───────
+        self._dpp_confirm_bar = tk.Frame(parent, bg="#EFF6FF",
+                                         highlightbackground=C_ACCENT,
+                                         highlightthickness=1)
+        lbl_row = tk.Frame(self._dpp_confirm_bar, bg="#EFF6FF")
+        lbl_row.pack(side="left", fill="x", expand=True, padx=(14, 8), pady=8)
+        tk.Label(lbl_row, text="Plan ready — review the summary below, then confirm.",
+                 bg="#EFF6FF", fg=C_ACCENT,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self._dpp_confirm_detail = tk.Label(lbl_row, text="",
+                                             bg="#EFF6FF", fg=C_TEXT,
+                                             font=F_SMALL, justify="left")
+        self._dpp_confirm_detail.pack(anchor="w")
+        btn_row = tk.Frame(self._dpp_confirm_bar, bg="#EFF6FF")
+        btn_row.pack(side="right", padx=14, pady=8)
+        self._dpp_confirm_btn = tk.Button(
+                  btn_row, text="Generate Documents",
+                  bg=C_SUCCESS, fg="#FFFFFF",
+                  activebackground="#15803D", activeforeground="#FFFFFF",
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", padx=16, pady=6, cursor="hand2",
+                  command=self._dpp_confirm)
+        self._dpp_confirm_btn.pack(side="left")
+        tk.Button(btn_row, text="Cancel",
+                  bg=C_BG, fg=C_TEXT, font=F_BODY,
+                  relief="solid", bd=1, padx=12, pady=5, cursor="hand2",
+                  command=self._dpp_cancel_plan).pack(side="left", padx=(8, 0))
+
+        # ── Confirm bar 2: print gate — hidden until PDFs are generated ───
+        self._dpp_print_bar = tk.Frame(parent, bg="#FFF7ED",
+                                        highlightbackground="#F59E0B",
+                                        highlightthickness=1)
+        lbl_row2 = tk.Frame(self._dpp_print_bar, bg="#FFF7ED")
+        lbl_row2.pack(side="left", fill="x", expand=True, padx=(14, 8), pady=8)
+        tk.Label(lbl_row2, text="Documents ready — confirm to send to printer.",
+                 bg="#FFF7ED", fg="#92400E",
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        self._dpp_print_detail = tk.Label(lbl_row2, text="",
+                                           bg="#FFF7ED", fg=C_TEXT,
+                                           font=F_SMALL, justify="left")
+        self._dpp_print_detail.pack(anchor="w")
+        btn_row2 = tk.Frame(self._dpp_print_bar, bg="#FFF7ED")
+        btn_row2.pack(side="right", padx=14, pady=8)
+        tk.Button(btn_row2, text="Send to Printer",
+                  bg="#F59E0B", fg="#FFFFFF",
+                  activebackground="#D97706", activeforeground="#FFFFFF",
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", padx=16, pady=6, cursor="hand2",
+                  command=self._dpp_confirm_print).pack(side="left")
+        tk.Button(btn_row2, text="Cancel Print",
+                  bg=C_BG, fg=C_TEXT, font=F_BODY,
+                  relief="solid", bd=1, padx=12, pady=5, cursor="hand2",
+                  command=self._dpp_cancel_print).pack(side="left", padx=(8, 0))
+
+        # ── Manual Printing — collapsible section ─────────────────────
+        self._mp_files: list[dict] = []
+        self._mp_expanded = tk.BooleanVar(value=False)
+
+        mp_toggle_bar = tk.Frame(parent, bg=C_BG)
+        mp_toggle_bar.pack(fill="x", padx=26, pady=(8, 0))
+        tk.Frame(mp_toggle_bar, bg=C_BORDER, height=1).pack(fill="x")
+        self._mp_toggle_btn = tk.Button(
+            mp_toggle_bar,
+            text="▶  Manual Printing",
+            bg=C_BG, fg=C_SUBTLE, font=("Segoe UI", 9, "bold"),
+            relief="flat", anchor="w", padx=0, pady=4, cursor="hand2",
+            command=self._mp_toggle)
+        self._mp_toggle_btn.pack(anchor="w")
+
+        self._mp_section = tk.Frame(parent, bg=C_BG)
+        # (not packed yet — shown on toggle)
+
+        # file list inner
+        mp_card = self._card(self._mp_section, "", padx=26, pady=(0, 4))
+
+        tb = tk.Frame(mp_card, bg=C_PANEL)
+        tb.pack(fill="x", pady=(0, 6))
+        tk.Label(tb, text="PDF Files", bg=C_PANEL, fg=C_TEXT,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Button(tb, text="Add PDFs", font=F_SMALL,
+                  bg=C_ACCENT, fg="#FFFFFF", activebackground=C_ACCENT_H,
+                  activeforeground="#FFFFFF", relief="flat", padx=10, pady=3,
+                  cursor="hand2", command=self._mp_add_files).pack(side="right")
+        tk.Button(tb, text="Clear All", font=F_SMALL,
+                  bg=C_BG, fg=C_TEXT, relief="solid", bd=1, padx=8, pady=2,
+                  cursor="hand2", command=self._mp_clear_all).pack(side="right", padx=(0, 6))
+
+        # column headers
+        hdr = tk.Frame(mp_card, bg=C_PANEL)
+        hdr.pack(fill="x")
+        tk.Label(hdr, text="File", bg=C_PANEL, fg=C_SUBTLE,
+                 font=F_SMALL, anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(hdr, text="Duplex", bg=C_PANEL, fg=C_SUBTLE,
+                 font=F_SMALL, width=7).pack(side="left")
+        tk.Label(hdr, text="", bg=C_PANEL, width=10).pack(side="left")
+        tk.Label(hdr, text="", bg=C_PANEL, width=4).pack(side="left")
+        tk.Frame(mp_card, bg=C_BORDER, height=1).pack(fill="x", pady=(2, 4))
+
+        list_wrap = tk.Frame(mp_card, bg=C_PANEL, height=180)
+        list_wrap.pack(fill="x")
+        list_wrap.pack_propagate(False)
+        mp_canvas = tk.Canvas(list_wrap, bg=C_PANEL, highlightthickness=0)
+        mp_sb = ttk.Scrollbar(list_wrap, orient="vertical", command=mp_canvas.yview)
+        self._mp_inner = tk.Frame(mp_canvas, bg=C_PANEL)
+        self._mp_canvas = mp_canvas
+        self._mp_inner.bind("<Configure>",
+            lambda *_: mp_canvas.configure(scrollregion=mp_canvas.bbox("all")))
+        mp_canvas.create_window((0, 0), window=self._mp_inner, anchor="nw")
+        mp_canvas.configure(yscrollcommand=mp_sb.set)
+        mp_sb.pack(side="right", fill="y")
+        mp_canvas.pack(side="left", fill="both", expand=True)
+
+        self._mp_empty_lbl = tk.Label(self._mp_inner,
+            text="No files added — click  Add PDFs  to get started.",
+            bg=C_PANEL, fg=C_SUBTLE, font=F_SMALL)
+        self._mp_empty_lbl.pack(pady=14)
+
+        # Print All row
+        pa = tk.Frame(self._mp_section, bg=C_BG)
+        pa.pack(fill="x", padx=26, pady=(2, 6))
+        tk.Button(pa, text="  Print All  ",
+                  bg=C_SUCCESS, fg="#FFFFFF",
+                  activebackground="#15803D", activeforeground="#FFFFFF",
+                  font=("Segoe UI", 10, "bold"),
+                  relief="flat", padx=16, pady=6, cursor="hand2",
+                  command=self._mp_print_all).pack(side="left")
+        tk.Label(pa, text="Sends all files in order with 3.5 s gap — uses the printer above.",
+                 bg=C_BG, fg=C_SUBTLE, font=F_SMALL).pack(side="left", padx=10)
+
         self._terminal(parent, "dpp", rows=15)
 
     def _dpp_detect_printer(self):
@@ -851,7 +1031,8 @@ class App:
             messagebox.showwarning(APP_TITLE,
                 f"Could not enumerate printers:\n{e}")
 
-    def _pick_from_list(self, title: str, items: list[str]) -> str | None:
+    def _pick_from_list(self, title: str, items: list[str],
+                        prompt: str = "") -> str | None:
         top = tk.Toplevel(self.root)
         top.title(title)
         top.geometry("580x380")
@@ -863,6 +1044,9 @@ class App:
         tk.Label(top, text=title, bg=C_BG, fg=C_TEXT,
                  font=("Segoe UI", 12, "bold")).pack(
                      pady=(16, 4), padx=16, anchor="w")
+        if prompt:
+            tk.Label(top, text=prompt, bg=C_BG, fg=C_SUBTLE,
+                     font=F_BODY).pack(pady=(0, 4), padx=16, anchor="w")
 
         body = tk.Frame(top, bg=C_BORDER)
         body.pack(fill="both", expand=True, padx=16, pady=4)
@@ -906,6 +1090,8 @@ class App:
 
     def _dpp_clear_plan(self):
         self._dpp_plan = None
+        if hasattr(self, "_dpp_confirm_bar"):
+            self._dpp_confirm_bar.pack_forget()
         term = self._panel_terms.get("dpp")
         if term:
             self._term_write(term, "Plan cleared.", "muted")
@@ -929,35 +1115,49 @@ class App:
         self._active_key = "dpp"
         term = self._panel_terms.get("dpp")
 
-        # Build plan on main thread (dialogs may appear)
+        # Build plan on main thread (dialogs may appear for variant/file selection)
         try:
             if term:
-                self._term_write(term, f"Building plan: {folder}", "info")
+                self._term_write(term, f"Building plan for: {folder}", "info")
             plan = dpp_build_plan(Path(folder), self)
         except Exception as e:
             if term:
                 self._term_write(term, f"Plan error: {e}", "error")
             return
 
-        # Show summary + confirm
+        # Write summary to terminal
         summary = dpp_make_summary(plan, printer, sim)
         if term:
             self._term_write(term, summary, "muted")
 
-        ok = messagebox.askyesno(
-            APP_TITLE,
-            summary + "\n\nProceed?",
-        )
-        if not ok:
-            if term:
-                self._term_write(term, "Cancelled by user.", "warn")
-            return
+        # Store plan + params and show inline confirm bar
+        self._dpp_plan    = plan
+        self._dpp_pending_printer = printer
+        self._dpp_pending_sim     = sim
 
-        self._dpp_plan = plan
+        cnc_d = sum(1 for p in plan["cnc"]
+                    if _dpp_classify_cnc(p) == "duplex")
+        cnc_s = len(plan["cnc"]) - cnc_d
+        detail = (f"{len(plan['cnc'])} CNC  •  {len(plan['flats'])} Flats  •  "
+                  f"{len(plan['assemblies'])} Assemblies"
+                  + (f"  •  Simulation (save to folder)" if sim else f"  •  {printer}"))
+        self._dpp_confirm_detail.config(text=detail)
+        self._dpp_confirm_btn.config(
+            text="  Start Simulation  " if sim else "  Generate Documents  ")
+        self._dpp_confirm_bar.pack(fill="x", padx=26, pady=(4, 0),
+                                    before=self._panel_term_frames["dpp"])
+
+    def _dpp_confirm(self):
+        plan    = self._dpp_plan
+        printer = getattr(self, "_dpp_pending_printer", "")
+        sim     = getattr(self, "_dpp_pending_sim", False)
+        if plan is None:
+            return
+        self._dpp_confirm_bar.pack_forget()
         _stop_event.clear()
+        self._dpp_print_event.clear()
         self._set_running("dpp", True)
         self._set_status("Doc Prep — running...")
-
         t = threading.Thread(
             target=self._dpp_worker,
             args=(plan, printer, sim),
@@ -965,6 +1165,58 @@ class App:
         )
         self._worker_thread = t
         t.start()
+
+    def _dpp_cancel_plan(self):
+        self._dpp_plan = None
+        self._dpp_confirm_bar.pack_forget()
+        term = self._panel_terms.get("dpp")
+        if term:
+            self._term_write(term, "Plan cancelled.", "warn")
+
+    def _dpp_confirm_print(self):
+        """User clicked 'Send to Printer' on the print confirm bar."""
+        self._dpp_print_bar.pack_forget()
+        self._dpp_print_event.set()
+
+    def _dpp_cancel_print(self):
+        """User clicked 'Cancel Print' — stop the worker."""
+        self._dpp_print_bar.pack_forget()
+        _stop_event.set()   # worker will raise StopRequested on next check_stop()
+
+    def _dpp_test_fwo_fill(self):
+        """Fill the FWO with PRF data and open the result — for coordinate tuning."""
+        folder = self._dpp_folder.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning(APP_TITLE,
+                "Select a job folder first so the FWO and PRF can be located.")
+            return
+        term = self._panel_terms.get("dpp")
+        try:
+            if term:
+                self._term_write(term, "Preview FWO: building plan...", "info")
+            plan = dpp_build_plan(Path(folder), self)
+            prf_data = plan.get("prf_data")
+            fwo_path = plan.get("fwo")
+            if not fwo_path:
+                messagebox.showwarning(APP_TITLE, "No FWO PDF found in the job folder.")
+                return
+            if not prf_data:
+                messagebox.showwarning(APP_TITLE, "No PRF data found — cannot fill FWO.")
+                return
+            logs_dir = exe_dir() / "logs"
+            logs_dir.mkdir(exist_ok=True)
+            out = logs_dir / "FWO_preview.pdf"
+            filled = _dpp_fill_fwo(fwo_path, prf_data)
+            shutil.copy2(str(filled), str(out))
+            Path(filled).unlink(missing_ok=True)
+            if term:
+                self._term_write(term, f"FWO preview saved: {out}", "ok")
+            os.startfile(str(out))
+        except Exception as e:
+            if term:
+                self._term_write(term, f"FWO preview error: {e}", "error")
+            else:
+                messagebox.showerror(APP_TITLE, str(e))
 
     def _dpp_worker(self, plan: dict, printer_name: str, simulation: bool):
         q = self._log_queue
@@ -980,22 +1232,49 @@ class App:
         if pythoncom:
             pythoncom.CoInitialize()
 
-        sim_dir: Path | None = None
+        fwo_filled: Path | None = None
+        out_dir:   Path | None = None
         try:
-            if simulation:
-                job_name = safe_name(Path(plan["job_folder"]).name)
-                ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                sim_dir = exe_dir() / f"Simulated_Print_Output_{job_name}_{ts}"
-                sim_dir.mkdir(parents=True, exist_ok=True)
-                emit(f"Simulation output: {sim_dir}", "info")
+            # ── Clean up previous print run's temp folder (safe now — spooling is done)
+            prev = self._dpp_last_print_dir
+            if prev and prev.exists():
+                try:
+                    shutil.rmtree(str(prev), ignore_errors=True)
+                except Exception:
+                    pass
+                self._dpp_last_print_dir = None
 
-            sections = dpp_build_sections(plan, printer_name, simulation, sim_dir)
-            total = len(sections)
+            # ── Determine output directory ────────────────────────────
+            job_name = safe_name(Path(plan["job_folder"]).name)
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            if simulation:
+                out_dir = exe_dir() / f"Simulated_Print_Output_{job_name}_{ts}"
+                out_dir.mkdir(parents=True, exist_ok=True)
+                emit(f"Simulation output: {out_dir}", "info")
+            else:
+                out_dir = Path(tempfile.mkdtemp(prefix="ETH_print_"))
+
+            # ── Fill FWO with PRF data ─────────────────────────────────
+            prf_data = plan.get("prf_data")
+            if prf_data and plan.get("fwo"):
+                try:
+                    fwo_filled = _dpp_fill_fwo(plan["fwo"], prf_data)
+                    plan["fwo_filled"] = fwo_filled
+                    emit(f"FWO filled: {prf_data['job_no']}  {prf_data['enclosure']}", "ok")
+                except Exception as e:
+                    emit(f"FWO fill skipped ({e}) — using blank original", "warn")
+                    plan["fwo_filled"] = None
+            else:
+                plan["fwo_filled"] = None
+
+            # ── Phase 1: Generate all PDFs ─────────────────────────────
+            sections = dpp_build_sections(plan, out_dir)
+            gen_total = len(sections)
 
             for idx, (title, func) in enumerate(sections):
                 check_stop()
                 q.put(("__progress__",
-                       ("dpp", idx, total, f"{idx+1}/{total}: {title}")))
+                       ("dpp", idx, gen_total, f"{idx+1}/{gen_total}: {title}")))
                 emit(f"  ▶  {title}", "heading")
                 try:
                     func()
@@ -1004,14 +1283,61 @@ class App:
                     raise
                 except Exception as e:
                     emit(f"     ✗  {title}: {e}", "error")
-                    emit("     Skipping to next section...", "warn")
+                    emit("     Skipping...", "warn")
 
-            q.put(("__progress__", ("dpp", total, total, "Done")))
-            success = True
-            if simulation:
-                emit(f"Simulation complete. Output: {sim_dir}", "ok")
-            else:
+            # ── Phase 2: Print (print mode only) ──────────────────────
+            if not simulation:
+                pdf_files = sorted(out_dir.glob("*.pdf"))
+                print_total = len(pdf_files)
+                emit(f"All {print_total} documents generated. Waiting for print confirmation...", "info")
+                q.put(("__print_confirm__",
+                       (print_total, [p.stem for p in pdf_files])))
+
+                # Pause here until the user clicks "Send to Printer" or Stop
+                while not self._dpp_print_event.is_set():
+                    check_stop()
+                    time.sleep(0.15)
+
+                emit("Print confirmed — sending to printer...", "info")
+                if win32print and printer_name:
+                    try:
+                        win32print.SetDefaultPrinter(printer_name)
+                    except Exception:
+                        pass
+
+                acrobat_exe = _find_acrobat()
+                if acrobat_exe:
+                    emit(f"Acrobat found: {acrobat_exe}", "info")
+                else:
+                    emit("Acrobat not found — falling back to default handler (no duplex control)", "warn")
+
+                for i, pdf in enumerate(pdf_files):
+                    check_stop()
+                    q.put(("__progress__",
+                           ("dpp", gen_total + i, gen_total + print_total,
+                            f"Printing {i+1}/{print_total}: {pdf.stem}")))
+                    emit(f"  ▶  {pdf.name}", "heading")
+                    # CNC duplex files are named NN_CNC_<stem>.pdf (not CNC_Simplex_Merged)
+                    is_duplex = bool(
+                        re.search(r'^\d+_CNC_', pdf.stem) and
+                        "CNC_Simplex" not in pdf.stem
+                    )
+                    try:
+                        status = _dpp_acrobat_print(pdf, printer_name, is_duplex, acrobat_exe)
+                        emit(f"     ✓  {status}", "ok")
+                    except Exception as e:
+                        emit(f"     ✗  {e}", "error")
+                    if i < print_total - 1:
+                        time.sleep(3.5)
+
+                q.put(("__progress__",
+                       ("dpp", gen_total + print_total, gen_total + print_total, "Done")))
                 emit("Print sequence complete.", "ok")
+            else:
+                q.put(("__progress__", ("dpp", gen_total, gen_total, "Done")))
+                emit(f"Simulation complete. Output: {out_dir}", "ok")
+
+            success = True
 
         except StopRequested:
             emit("Stopped by user.", "warn")
@@ -1020,6 +1346,15 @@ class App:
             for ln in traceback.format_exc().splitlines():
                 emit(ln, "error")
         finally:
+            if fwo_filled and fwo_filled.exists():
+                try:
+                    fwo_filled.unlink()
+                except Exception:
+                    pass
+            # Defer temp print dir cleanup to next run so the spooler can finish reading.
+            # Simulation folders are kept permanently (user reviews them).
+            if not simulation and out_dir and out_dir.exists():
+                self._dpp_last_print_dir = out_dir
             if pythoncom:
                 try:
                     pythoncom.CoUninitialize()
@@ -1095,6 +1430,131 @@ class App:
                      font=F_BODY).pack(side="left", padx=(0, 8))
             tk.Label(row, text=bullet, bg=C_PANEL, fg=C_TEXT,
                      font=F_BODY, anchor="w").pack(side="left")
+
+
+# ═════════════════════════════════════════════════════════════════════
+#  MANUAL PRINTING PANEL
+    def _mp_toggle(self):
+        if self._mp_expanded.get():
+            self._mp_section.pack_forget()
+            self._mp_expanded.set(False)
+            self._mp_toggle_btn.config(text="▶  Manual Printing")
+        else:
+            self._mp_section.pack(fill="x", before=self._panel_term_frames["dpp"])
+            self._mp_expanded.set(True)
+            self._mp_toggle_btn.config(text="▼  Manual Printing")
+
+    def _mp_add_files(self):
+        paths = filedialog.askopenfilenames(
+            title="Select PDF files to print",
+            filetypes=[("PDF files", "*.pdf *.PDF"), ("All files", "*.*")])
+        for p in paths:
+            self._mp_append_file(Path(p))
+
+    def _mp_append_file(self, path: Path):
+        duplex_var = tk.BooleanVar(value=False)
+        row = tk.Frame(self._mp_inner, bg=C_PANEL)
+        row.pack(fill="x", pady=1)
+
+        tk.Label(row, text=path.name, bg=C_PANEL, fg=C_TEXT,
+                 font=F_BODY, anchor="w",
+                 wraplength=500, justify="left").pack(
+                     side="left", fill="x", expand=True, padx=(0, 8))
+
+        tk.Checkbutton(row, variable=duplex_var, text="Duplex",
+                       bg=C_PANEL, fg=C_TEXT, font=F_SMALL,
+                       activebackground=C_PANEL, selectcolor=C_PANEL,
+                       width=7).pack(side="left")
+
+        entry = {"path": path, "duplex_var": duplex_var, "row": row}
+        self._mp_files.append(entry)
+
+        tk.Button(row, text="Print", font=F_SMALL,
+                  bg=C_ACCENT, fg="#FFFFFF", activebackground=C_ACCENT_H,
+                  activeforeground="#FFFFFF", relief="flat", padx=10, pady=3,
+                  cursor="hand2",
+                  command=lambda e=entry: self._mp_print_one(e)).pack(side="left", padx=(4, 4))
+
+        tk.Button(row, text="✕", font=F_SMALL,
+                  bg=C_BG, fg="#EF4444", relief="flat", padx=6, pady=3,
+                  cursor="hand2",
+                  command=lambda e=entry: self._mp_remove_file(e)).pack(side="left")
+
+        self._mp_empty_lbl.pack_forget()
+        self._mp_canvas.update_idletasks()
+        self._mp_canvas.configure(scrollregion=self._mp_canvas.bbox("all"))
+
+    def _mp_remove_file(self, entry: dict):
+        entry["row"].destroy()
+        self._mp_files = [e for e in self._mp_files if e is not entry]
+        if not self._mp_files:
+            self._mp_empty_lbl.pack(pady=14)
+        self._mp_canvas.update_idletasks()
+        self._mp_canvas.configure(scrollregion=self._mp_canvas.bbox("all"))
+
+    def _mp_clear_all(self):
+        for e in self._mp_files:
+            e["row"].destroy()
+        self._mp_files.clear()
+        self._mp_empty_lbl.pack(pady=14)
+        self._mp_canvas.update_idletasks()
+        self._mp_canvas.configure(scrollregion=self._mp_canvas.bbox("all"))
+
+    def _mp_print_one(self, entry: dict):
+        printer = self._dpp_printer.get().strip()
+        path    = entry["path"]
+        duplex  = entry["duplex_var"].get()
+        term    = self._panel_terms.get("dpp")
+        acrobat = _find_acrobat()
+        self._active_key = "dpp"
+        if term:
+            self._term_write(term,
+                f"Manual print: {path.name}  ({'duplex' if duplex else 'simplex'})", "info")
+        try:
+            if win32print and printer:
+                try:
+                    win32print.SetDefaultPrinter(printer)
+                except Exception:
+                    pass
+            status = _dpp_acrobat_print(path, printer, duplex, acrobat)
+            if term:
+                self._term_write(term, f"  ✓  {status}", "ok")
+        except Exception as e:
+            if term:
+                self._term_write(term, f"  ✗  {e}", "error")
+
+    def _mp_print_all(self):
+        if not self._mp_files:
+            messagebox.showwarning(APP_TITLE, "No files in the list.")
+            return
+        printer = self._dpp_printer.get().strip()
+        files   = list(self._mp_files)
+        self._active_key = "dpp"
+
+        def worker():
+            acrobat = _find_acrobat()
+            if win32print and printer:
+                try:
+                    win32print.SetDefaultPrinter(printer)
+                except Exception:
+                    pass
+            q = self._log_queue
+            total = len(files)
+            for i, entry in enumerate(files):
+                path   = entry["path"]
+                duplex = entry["duplex_var"].get()
+                q.put(("info",
+                    f"[{i+1}/{total}]  {path.name}  ({'duplex' if duplex else 'simplex'})"))
+                try:
+                    status = _dpp_acrobat_print(path, printer, duplex, acrobat)
+                    q.put(("ok", f"  ✓  {status}"))
+                except Exception as e:
+                    q.put(("error", f"  ✗  {e}"))
+                if i < total - 1:
+                    time.sleep(3.5)
+            q.put(("ok", "Print All complete."))
+
+        threading.Thread(target=worker, daemon=True).start()
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1200,18 +1660,168 @@ def _dpp_match_excel(folder: Path, token: str, title: str,
     return next(f for f in matches if f.name == choice)
 
 
-def _dpp_match_pack(folder: Path, app: "App") -> Path:
-    matches = [f for f in _dpp_list_files(folder)
-               if f.suffix in PDF_EXTENSIONS and "PACK" in f.name.upper()]
-    if not matches:
+def _dpp_match_pack(folder: Path, app: "App", model_no: str = "") -> Path:
+    """Find the PACK PDF. Tries model number first, falls back to any PACK, prompts if ambiguous."""
+    all_packs = [f for f in _dpp_list_files(folder)
+                 if f.suffix in PDF_EXTENSIONS and "PACK" in f.name.upper()]
+    if not all_packs:
         raise RuntimeError("No PDF with 'PACK' in name found in Electrical Drawings.")
-    if len(matches) == 1:
-        return matches[0]
+
+    if model_no:
+        model_up = model_no.upper()
+        model_matches = [f for f in all_packs if model_up in f.name.upper()]
+        if len(model_matches) == 1:
+            return model_matches[0]
+        if len(model_matches) > 1:
+            choice = app._pick_from_list(
+                "Select Electrical Drawing Pack",
+                [f.name for f in model_matches],
+                prompt=f"Multiple PACK PDFs match model '{model_no}':")
+            if not choice:
+                raise RuntimeError("Pack PDF selection cancelled.")
+            return next(f for f in model_matches if f.name == choice)
+        # No model match — fall through to any PACK, with a prompt
+        choice = app._pick_from_list(
+            "Select Electrical Drawing Pack",
+            [f.name for f in all_packs],
+            prompt=f"No PACK PDF found matching model '{model_no}'. Select manually:")
+        if not choice:
+            raise RuntimeError("Pack PDF selection cancelled.")
+        return next(f for f in all_packs if f.name == choice)
+
+    if len(all_packs) == 1:
+        return all_packs[0]
     choice = app._pick_from_list("Select Electrical Drawing Pack",
-                                  [f.name for f in matches])
+                                  [f.name for f in all_packs])
     if not choice:
         raise RuntimeError("Pack PDF selection cancelled.")
-    return next(f for f in matches if f.name == choice)
+    return next(f for f in all_packs if f.name == choice)
+
+
+def _dpp_find_variant_prf(prf_folder: Path, mechs: list, app: "App") -> Path:
+    """Find the PRF Excel file. When one variant is selected, prefers a PRF with its suffix."""
+    all_prfs = [f for f in _dpp_list_files(prf_folder)
+                if f.suffix.lower() in {e.lower() for e in EXCEL_EXTENSIONS}
+                and "prf" in f.name.lower()]
+    if not all_prfs:
+        raise RuntimeError(f"No PRF file found in {prf_folder}")
+
+    # Extract variant suffix from the first mech name (e.g. "J15302-01" → "-01")
+    variant_suffix = ""
+    if len(mechs) == 1:
+        m = re.search(r"(-\d{2})$", mechs[0].name)
+        if m:
+            variant_suffix = m.group(1)
+
+    if variant_suffix:
+        variant_prfs = [f for f in all_prfs if variant_suffix in f.name]
+        if len(variant_prfs) == 1:
+            return variant_prfs[0]
+        if len(variant_prfs) > 1:
+            choice = app._pick_from_list(
+                f"Select PRF for variant {variant_suffix}",
+                [f.name for f in variant_prfs])
+            if not choice:
+                raise RuntimeError("PRF selection cancelled.")
+            return next(f for f in variant_prfs if f.name == choice)
+        # No variant-specific PRF found
+        if len(all_prfs) == 1:
+            return all_prfs[0]   # only one PRF — use it
+        choice = app._pick_from_list(
+            f"Select PRF for variant {variant_suffix}",
+            [f.name for f in all_prfs],
+            prompt=f"No PRF found with '{variant_suffix}' in name. Select manually:")
+        if not choice:
+            raise RuntimeError("PRF selection cancelled.")
+        return next(f for f in all_prfs if f.name == choice)
+
+    # No variant suffix — standard match
+    if len(all_prfs) == 1:
+        return all_prfs[0]
+    choice = app._pick_from_list("Select Production Release Form",
+                                  [f.name for f in all_prfs])
+    if not choice:
+        raise RuntimeError("PRF selection cancelled.")
+    return next(f for f in all_prfs if f.name == choice)
+
+
+def _dpp_read_prf(prf_path: Path) -> dict:
+    """Read key fields from the PRF using openpyxl (no COM needed)."""
+    if _openpyxl is None:
+        raise RuntimeError("openpyxl required for PRF auto-fill. pip install openpyxl")
+    wb = _openpyxl.load_workbook(str(prf_path), data_only=True)
+    ws = wb["Form"] if "Form" in wb.sheetnames else wb.worksheets[0]
+
+    def cell(ref: str) -> str:
+        v = ws[ref].value
+        return str(v).strip() if v is not None else ""
+
+    job_no   = cell("C4")
+    model_no = cell("G9")
+    job_name = cell("C8")
+    size     = cell("G18")
+    material = cell("G19")
+    rating   = cell("G20")
+    qty      = cell("G22")
+
+    mat_lc = material.lower()
+    if "aluminum" in mat_lc or "aluminium" in mat_lc:
+        mat_abbr = "ALU"
+    elif "stainless" in mat_lc:
+        mat_abbr = "SS"
+    else:
+        mat_abbr = material
+
+    rat_lc = rating.lower().strip()
+    if rat_lc in ("type 3r", "type3r"):
+        rat_abbr = "N3R"
+    else:
+        rat_abbr = rating
+
+    enclosure = " ".join(p for p in [size, mat_abbr, rat_abbr] if p)
+
+    return {
+        "job_no":    job_no,
+        "model_no":  model_no,
+        "job_name":  job_name,
+        "enclosure": enclosure,
+        "qty":       qty,
+        # raw fields for summary
+        "size":      size,
+        "material":  material,
+        "rating":    rating,
+    }
+
+
+def _dpp_fill_fwo(fwo_path: Path, prf_data: dict) -> Path:
+    """Overlay PRF data onto the FWO PDF. Returns path to a filled temp PDF.
+    Adjust FWO_* constants at the top of the file if text position is off."""
+    if _fitz is None:
+        raise RuntimeError("PyMuPDF required for FWO auto-fill. pip install pymupdf")
+    today = datetime.now().strftime("%B %d, %Y")   # e.g. March 26, 2026
+    fields = [
+        (FWO_JOB_NO_X,    FWO_JOB_NO_Y,    prf_data["job_no"]),
+        (FWO_JOB_NAME_X,  FWO_JOB_NAME_Y,  prf_data["job_name"]),
+        (FWO_DATE_X,      FWO_DATE_Y,       today),
+        (FWO_ENCLOSURE_X, FWO_ENCLOSURE_Y,  prf_data["enclosure"]),
+        (FWO_UNITS_X,     FWO_UNITS_Y,      prf_data["qty"]),
+    ]
+    doc = _fitz.open(str(fwo_path))
+    page = doc[0]
+    for x, y, text in fields:
+        if text:
+            page.insert_text(
+                _fitz.Point(x, y), text,
+                fontsize=FWO_FONT_SIZE,
+                fontname="helv",
+                color=(0, 0, 0),
+            )
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_FWO_filled.pdf")
+    tmp_path = Path(tmp.name)
+    tmp.close()
+    doc.save(str(tmp_path))
+    doc.close()
+    return tmp_path
 
 
 def _dpp_match_cnc(folder: Path) -> list[Path]:
@@ -1278,10 +1888,74 @@ def _dpp_get_context(job_folder: Path) -> dict:
         "variants like '*-01' inside 200 Mech.")
 
 
+def _find_acrobat() -> str | None:
+    """Return the path to Acrobat.exe, or None if not found."""
+    for p in ACROBAT_SEARCH_PATHS:
+        if os.path.isfile(p):
+            return p
+    return None
+
+
+def _dpp_set_devmode_duplex(printer_name: str, duplex: bool) -> bool:
+    """Set per-user duplex preference for the printer via PRINTER_INFO_9.
+    Level 9 requires only PRINTER_ACCESS_USE — no admin rights needed.
+    Returns True on success, False if it could not be applied."""
+    if win32print is None:
+        return False
+    try:
+        h = win32print.OpenPrinter(printer_name)
+        try:
+            # Prefer per-user DEVMODE (level 9); fall back to global (level 2)
+            info9 = win32print.GetPrinter(h, 9)
+            dm = info9.get("pDevMode") if info9 else None
+            if dm is None:
+                info2 = win32print.GetPrinter(h, 2)
+                dm = info2.get("pDevMode")
+            if dm is None:
+                return False
+            dm.Duplex = 2 if duplex else 1   # 2 = DMDUP_VERTICAL (long-edge), 1 = simplex
+            win32print.SetPrinter(h, 9, {"pDevMode": dm}, 0)
+            return True
+        finally:
+            win32print.ClosePrinter(h)
+    except Exception:
+        return False
+
+
+def _dpp_acrobat_print(pdf_path: Path, printer_name: str, duplex: bool,
+                        acrobat_exe: str | None) -> str:
+    """Print one PDF via Acrobat with the specified duplex setting.
+    Sets per-user DEVMODE then launches Acrobat /t for silent printing.
+    Returns a status string for the terminal."""
+    devmode_ok = _dpp_set_devmode_duplex(printer_name, duplex)
+    mode_str = ("duplex" if duplex else "simplex") + ("" if devmode_ok else " [devmode failed]")
+
+    if acrobat_exe:
+        subprocess.Popen(
+            [acrobat_exe, "/t", str(pdf_path), printer_name],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return f"sent via Acrobat ({mode_str})"
+    else:
+        os.startfile(str(pdf_path), "print")
+        return f"sent via default handler ({mode_str})"
+
+
 def dpp_build_plan(job_folder: Path, app: "App") -> dict:
     ctx = _dpp_get_context(job_folder)
     base = Path(ctx["job_root"])
     mechs = ctx["mech_roots"]
+
+    # If multiple variants found and user didn't select one directly, let them choose
+    if len(mechs) > 1 and not ctx["variant_only"]:
+        choice = app._pick_from_list(
+            "Select Mechanical Variant",
+            [m.name for m in mechs],
+            prompt="Choose which variant to print:")
+        if choice is None:
+            raise RuntimeError("Variant selection cancelled.")
+        mechs = [m for m in mechs if m.name == choice]
 
     plan: dict = {
         "job_folder": str(job_folder),
@@ -1290,12 +1964,26 @@ def dpp_build_plan(job_folder: Path, app: "App") -> dict:
         "variant_only": ctx["variant_only"],
     }
 
-    plan["fwo"]  = _dpp_match_fwo(base / "300 Inputs")
-    plan["bom"]  = _dpp_match_excel(mechs[0] / "204 BOM", "BOM", "BOM", app)
-    plan["prf"]  = _dpp_match_excel(
-        base / "300 Inputs" / "302 Production Release Form",
-        "PRF", "Production Release Form", app)
-    plan["pack"] = _dpp_match_pack(base / "100 Elec" / "102 Drawings", app)
+    plan["fwo"] = _dpp_match_fwo(base / "300 Inputs")
+    plan["bom"] = _dpp_match_excel(mechs[0] / "204 BOM", "BOM", "BOM", app)
+
+    # Variant-aware PRF: prefer a PRF named with the variant suffix (e.g. -01)
+    prf_folder = base / "300 Inputs" / "302 Production Release Form"
+    plan["prf"] = _dpp_find_variant_prf(prf_folder, mechs, app)
+
+    # Read PRF data to get model number for electrical drawing matching
+    prf_data: dict | None = None
+    model_no = ""
+    if _openpyxl is not None:
+        try:
+            prf_data = _dpp_read_prf(plan["prf"])
+            model_no = prf_data.get("model_no", "")
+        except Exception:
+            prf_data = None  # non-fatal — will fill FWO manually
+
+    plan["prf_data"]  = prf_data
+    plan["pack"]      = _dpp_match_pack(
+        base / "100 Elec" / "102 Drawings", app, model_no=model_no)
 
     cnc, flats, assemblies, excluded_lay = [], [], [], []
     for m in mechs:
@@ -1320,10 +2008,25 @@ def dpp_make_summary(plan: dict, printer: str, simulation: bool) -> str:
         f"Mode: {mode}",
         f"Job Folder: {plan['job_folder']}",
         "",
-        f"  Fabrication Work Order : {plan['fwo'].name}",
+    ]
+
+    # PRF data block
+    prf_data = plan.get("prf_data")
+    if prf_data:
+        lines += [
+            f"  Job No.    : {prf_data['job_no']}",
+            f"  Job Name   : {prf_data['job_name']}",
+            f"  Enclosure  : {prf_data['enclosure']}   Qty: {prf_data['qty']}",
+            f"  Model No.  : {prf_data['model_no']}",
+            "",
+        ]
+
+    lines += [
+        f"  Fabrication Work Order : {plan['fwo'].name}"
+        + (" (auto-filled)" if prf_data else ""),
         f"  BOM                    : {plan['bom'].name}",
         f"  CNC files              : {len(plan['cnc'])} PDFs"
-        f"  ({cnc_d} duplex individual, {cnc_s} simplex merged)",
+        f"  ({cnc_d} duplex, {cnc_s} simplex merged)",
         f"  PDFs_Flats             : {len(plan['flats'])} PDFs (merged)",
         f"  Production Release Form: {plan['prf'].name}",
         f"  Electrical Pack        : {plan['pack'].name} (pages 1-2)",
@@ -1338,9 +2041,12 @@ def _dpp_merge_pdfs(files: list[Path], label: str) -> Path:
         raise RuntimeError("pypdf not installed. pip install pypdf")
     writer = PdfWriter()
     for pdf in files:
-        reader = PdfReader(str(pdf))
-        for page in reader.pages:
-            writer.add_page(page)
+        try:
+            reader = PdfReader(str(pdf))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as e:
+            raise RuntimeError(f"Could not merge {pdf.name} into {label}: {e}") from e
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{label}.pdf")
     tmp_path = Path(tmp.name)
     tmp.close()
@@ -1348,139 +2054,6 @@ def _dpp_merge_pdfs(files: list[Path], label: str) -> Path:
         writer.write(f)
     return tmp_path
 
-
-def _dpp_set_duplex(printer: str, mode: str):
-    if win32print is None:
-        return
-    desired = 1 if mode == "simplex" else 2
-    h = win32print.OpenPrinter(printer)
-    try:
-        props = win32print.GetPrinter(h, 2)
-        dm = props.get("pDevMode")
-        if dm and hasattr(dm, "Duplex"):
-            dm.Duplex = desired
-            props["pDevMode"] = dm
-            win32print.SetPrinter(h, 2, props, 0)
-    finally:
-        win32print.ClosePrinter(h)
-
-
-def _dpp_queue_snap(printer: str) -> dict:
-    if win32print is None:
-        return {}
-    h = win32print.OpenPrinter(printer)
-    try:
-        info = win32print.GetPrinter(h, 2)
-        total = info.get("cJobs", 0)
-        if total <= 0:
-            return {}
-        jobs = win32print.EnumJobs(h, 0, total, 1)
-        return {str(j.get("JobId")): str(j.get("pDocument") or "")
-                for j in jobs}
-    finally:
-        win32print.ClosePrinter(h)
-
-
-def _dpp_wait_settle(printer: str, settle=2.0, timeout=20):
-    if win32print is None:
-        time.sleep(1.5)
-        return
-    deadline = time.time() + timeout
-    stable_since = None
-    prev = tuple(sorted(_dpp_queue_snap(printer).items()))
-    while time.time() < deadline:
-        time.sleep(0.5)
-        check_stop()
-        cur = tuple(sorted(_dpp_queue_snap(printer).items()))
-        if cur == prev:
-            if stable_since is None:
-                stable_since = time.time()
-            elif time.time() - stable_since >= settle:
-                return
-        else:
-            prev = cur
-            stable_since = None
-
-
-def _dpp_print_pdf(pdf: Path, printer: str, mode: str, pages=None):
-    target = pdf
-    tmp_cleanup = None
-    if pages is not None:
-        reader = PdfReader(str(pdf))
-        writer = PdfWriter()
-        for i in range(pages[0], pages[1] + 1):
-            writer.add_page(reader.pages[i])
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix="_page_range.pdf")
-        target = Path(tmp.name)
-        tmp.close()
-        with open(target, "wb") as f:
-            writer.write(f)
-        tmp_cleanup = target
-    try:
-        _dpp_set_duplex(printer, mode)
-        before = _dpp_queue_snap(printer)
-        os.startfile(str(target), "print")
-        # wait a moment for spool
-        deadline = time.time() + 25
-        while time.time() < deadline:
-            time.sleep(0.5)
-            check_stop()
-            cur = _dpp_queue_snap(printer)
-            if any(k not in before for k in cur):
-                break
-        _dpp_wait_settle(printer)
-    finally:
-        if tmp_cleanup and tmp_cleanup.exists():
-            try:
-                tmp_cleanup.unlink()
-            except Exception:
-                pass
-
-
-def _dpp_print_excel(file: Path, printer: str, first_sheet_only: bool,
-                     excel=None):
-    created = excel is None
-    if created:
-        excel = _dpp_get_excel()
-    wb = None
-    try:
-        wb = excel.Workbooks.Open(str(file))
-        if first_sheet_only:
-            ws = wb.Worksheets(1)
-            ws.PrintOut(ActivePrinter=printer)
-        else:
-            active = wb.ActiveSheet
-            ps = active.PageSetup
-            ps.Orientation = 2
-            ps.Zoom = False
-            ps.FitToPagesWide = 1
-            ps.FitToPagesTall = False
-            active.PrintOut(ActivePrinter=printer)
-    finally:
-        if wb is not None:
-            try:
-                wb.Close(False)
-            except Exception:
-                pass
-        if created and excel:
-            try:
-                excel.Quit()
-            except Exception:
-                pass
-
-
-def _dpp_print_merged_pdfs(files: list[Path], printer: str,
-                            mode: str, label: str):
-    tmp = None
-    try:
-        tmp = _dpp_merge_pdfs(files, label)
-        _dpp_print_pdf(tmp, printer, mode)
-    finally:
-        if tmp and tmp.exists():
-            try:
-                tmp.unlink()
-            except Exception:
-                pass
 
 
 def _dpp_sim_save_pdf(src: Path, dest: Path, pages=None):
@@ -1539,127 +2112,66 @@ def _dpp_sim_save_merged(files: list[Path], dest: Path):
                 pass
 
 
-def dpp_build_sections(plan: dict, printer: str,
-                       simulation: bool, sim_dir: Path | None) -> list:
+def dpp_build_sections(plan: dict, out_dir: Path) -> list:
+    """Build all documents as PDFs into out_dir. Used for both simulation and print modes."""
     sections = []
+    n = [0]
 
-    if simulation:
-        n = [0]
+    def dest(label: str) -> Path:
+        n[0] += 1
+        return out_dir / f"{n[0]:02d}_{safe_name(label)}.pdf"
 
-        def dest(label: str) -> Path:
-            n[0] += 1
-            return sim_dir / f"{n[0]:02d}_{safe_name(label)}.pdf"
+    excel_holder = [None]
 
-        excel_holder = [None]
+    def get_xl():
+        if excel_holder[0] is None:
+            excel_holder[0] = _dpp_get_excel()
+        return excel_holder[0]
 
-        def get_xl():
-            if excel_holder[0] is None:
-                excel_holder[0] = _dpp_get_excel()
-            return excel_holder[0]
+    def quit_xl():
+        if excel_holder[0]:
+            try:
+                excel_holder[0].Quit()
+            except Exception:
+                pass
+            excel_holder[0] = None
 
-        def quit_xl():
-            if excel_holder[0]:
-                try:
-                    excel_holder[0].Quit()
-                except Exception:
-                    pass
-                excel_holder[0] = None
+    _fwo_src = plan.get("fwo_filled") or plan["fwo"]
+    sections.append(("Fabrication Work Order",
+        lambda _f=_fwo_src: _dpp_sim_save_pdf(_f, dest("Fabrication_Work_Order"))))
 
-        sections.append(("Fabrication Work Order",
-            lambda: _dpp_sim_save_pdf(plan["fwo"], dest("Fabrication_Work_Order"))))
+    sections.append(("BOM",
+        lambda: _dpp_sim_excel_to_pdf(
+            plan["bom"], dest("BOM"),
+            first_sheet_only=False, excel=get_xl())))
 
-        sections.append(("BOM",
-            lambda: _dpp_sim_excel_to_pdf(
-                plan["bom"], dest("BOM"),
-                first_sheet_only=False, excel=get_xl())))
+    for pdf in plan["cnc"]:
+        p = pdf
+        if _dpp_classify_cnc(p) == "duplex":
+            sections.append((f"CNC (duplex): {p.name}",
+                lambda _p=p: _dpp_sim_save_pdf(_p, dest(f"CNC_{_p.stem}"))))
 
-        for pdf in plan["cnc"]:
-            p = pdf  # capture
-            if _dpp_classify_cnc(p) == "duplex":
-                sections.append((f"CNC (duplex): {p.name}",
-                    lambda _p=p: _dpp_sim_save_pdf(_p, dest(f"CNC_{_p.stem}"))))
+    cnc_simplex = [p for p in plan["cnc"] if _dpp_classify_cnc(p) == "simplex"]
+    if cnc_simplex:
+        sections.append(("CNC Simplex (merged)",
+            lambda: _dpp_sim_save_merged(cnc_simplex, dest("CNC_Simplex_Merged"))))
 
-        cnc_simplex = [p for p in plan["cnc"]
-                       if _dpp_classify_cnc(p) == "simplex"]
-        if cnc_simplex:
-            sections.append(("CNC Simplex (merged)",
-                lambda: _dpp_sim_save_merged(cnc_simplex, dest("CNC_Simplex_Merged"))))
+    sections.append(("PDFs_Flats (merged)",
+        lambda: _dpp_sim_save_merged(plan["flats"], dest("PDFs_Flats_Merged"))))
 
-        sections.append(("PDFs_Flats (merged)",
-            lambda: _dpp_sim_save_merged(plan["flats"], dest("PDFs_Flats_Merged"))))
+    sections.append(("Production Release Form",
+        lambda: _dpp_sim_excel_to_pdf(
+            plan["prf"], dest("Production_Release_Form"),
+            first_sheet_only=True, excel=get_xl())))
 
-        sections.append(("Production Release Form",
-            lambda: _dpp_sim_excel_to_pdf(
-                plan["prf"], dest("Production_Release_Form"),
-                first_sheet_only=True, excel=get_xl())))
+    sections.append(("Electrical Pack (pages 1-2)",
+        lambda: _dpp_sim_save_pdf(
+            plan["pack"], dest("Electrical_Pack_Pages_1_2"), pages=(0, 1))))
 
-        sections.append(("Electrical Pack (pages 1-2)",
-            lambda: _dpp_sim_save_pdf(
-                plan["pack"], dest("Electrical_Pack_Pages_1_2"), pages=(0, 1))))
+    sections.append(("Assemblies (merged)",
+        lambda: _dpp_sim_save_merged(plan["assemblies"], dest("Assemblies_Merged"))))
 
-        sections.append(("Assemblies (merged)",
-            lambda: _dpp_sim_save_merged(
-                plan["assemblies"], dest("Assemblies_Merged"))))
-
-        sections.append(("Cleanup Excel", quit_xl))
-
-    else:
-        excel_holder = [None]
-
-        def get_xl():
-            if excel_holder[0] is None:
-                excel_holder[0] = _dpp_get_excel()
-            return excel_holder[0]
-
-        def quit_xl():
-            if excel_holder[0]:
-                try:
-                    excel_holder[0].Quit()
-                except Exception:
-                    pass
-                excel_holder[0] = None
-
-        if win32print:
-            win32print.SetDefaultPrinter(printer)
-
-        sections.append(("Fabrication Work Order",
-            lambda: _dpp_print_pdf(plan["fwo"], printer, "simplex")))
-
-        sections.append(("BOM",
-            lambda: _dpp_print_excel(
-                plan["bom"], printer,
-                first_sheet_only=False, excel=get_xl())))
-
-        for pdf in plan["cnc"]:
-            p = pdf
-            if _dpp_classify_cnc(p) == "duplex":
-                sections.append((f"CNC (duplex): {p.name}",
-                    lambda _p=p: _dpp_print_pdf(_p, printer, "duplex")))
-
-        cnc_simplex = [p for p in plan["cnc"]
-                       if _dpp_classify_cnc(p) == "simplex"]
-        if cnc_simplex:
-            sections.append(("CNC Simplex (merged)",
-                lambda: _dpp_print_merged_pdfs(
-                    cnc_simplex, printer, "simplex", "CNC_Simplex")))
-
-        sections.append(("PDFs_Flats (merged)",
-            lambda: _dpp_print_merged_pdfs(
-                plan["flats"], printer, "simplex", "PDFs_Flats")))
-
-        sections.append(("Production Release Form",
-            lambda: _dpp_print_excel(
-                plan["prf"], printer,
-                first_sheet_only=True, excel=get_xl())))
-
-        sections.append(("Electrical Pack (pages 1-2)",
-            lambda: _dpp_print_pdf(plan["pack"], printer, "simplex", pages=(0, 1))))
-
-        sections.append(("Assemblies (merged)",
-            lambda: _dpp_print_merged_pdfs(
-                plan["assemblies"], printer, "simplex", "Assemblies")))
-
-        sections.append(("Cleanup Excel", quit_xl))
+    sections.append(("Cleanup Excel", quit_xl))
 
     return sections
 
