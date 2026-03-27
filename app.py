@@ -25,6 +25,40 @@ from datetime import datetime
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
+# ── splash screen — shown immediately, before heavy imports ──────────
+def _make_splash() -> tuple["tk.Tk", "tk.Toplevel"]:
+    """Create a minimal loading window to cover the heavy-import delay."""
+    root = tk.Tk()
+    root.withdraw()
+
+    sp = tk.Toplevel(root)
+    sp.overrideredirect(True)
+    sp.configure(bg="#1E2B40")
+    w, h = 340, 148
+    sw, sh = sp.winfo_screenwidth(), sp.winfo_screenheight()
+    sp.geometry(f"{w}x{h}+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    tk.Label(sp, text="Engineering Tool Hub",
+             bg="#1E2B40", fg="#FFFFFF",
+             font=("Segoe UI", 14, "bold")).pack(pady=(26, 2))
+    tk.Label(sp, text="v1.0.0  —  FoxFab",
+             bg="#1E2B40", fg="#64748B",
+             font=("Segoe UI", 9)).pack()
+    tk.Label(sp, text="Starting up…",
+             bg="#1E2B40", fg="#93C5FD",
+             font=("Segoe UI", 9)).pack(pady=(8, 0))
+    bar = ttk.Progressbar(sp, mode="indeterminate", length=280)
+    bar.pack(pady=(10, 0))
+    bar.start(10)
+
+    sp.lift()
+    sp.attributes("-topmost", True)
+    sp.update()
+    return root, sp
+
+
+_splash_root, _splash_win = _make_splash()
+
 # ── optional heavy imports ────────────────────────────────────────────
 try:
     import win32print
@@ -278,9 +312,10 @@ class App:
         self._content = tk.Frame(outer, bg=C_BG)
         self._content.pack(side="left", fill="both", expand=True)
 
-        # build each panel (hidden until activated)
+        # panel frames — content is built lazily on first _switch_tool() call
         self._panels: dict[str, tk.Frame] = {}
-        builders = {
+        self._panel_built: set[str] = set()
+        self._builders: dict[str, object] = {
             "bom": self._build_bom_panel,
             "dpp": self._build_dpp_panel,
             "sw":  self._build_sw_panel,
@@ -288,7 +323,6 @@ class App:
         for key, _ in self.TOOLS:
             frame = tk.Frame(self._content, bg=C_BG)
             self._panels[key] = frame
-            builders[key](frame)
 
     def _build_sidebar(self):
         sb = self._sidebar
@@ -330,6 +364,11 @@ class App:
         self._status_lbl.pack(side="bottom", fill="x", pady=(0, 6))
 
     def _switch_tool(self, key: str):
+        # build panel content on first visit
+        if key not in self._panel_built:
+            self._builders[key](self._panels[key])
+            self._panel_built.add(key)
+
         self._active_key = key
         for k, btn in self._nav_btns.items():
             if k == key:
@@ -2682,8 +2721,10 @@ def _cnc_find_cnc_folder_for_bom(bom_path: Path) -> Path | None:
 
 
 def main():
-    root = tk.Tk()
-    root.withdraw()
+    global _splash_root, _splash_win
+
+    # Reuse the root that was created for the splash
+    root = _splash_root
 
     # DPI awareness on Windows
     try:
@@ -2692,8 +2733,15 @@ def main():
     except Exception:
         pass
 
-    root.deiconify()
+    # Build the app while the splash is still visible
     App(root)
+
+    # Dismiss splash and reveal the fully-built main window
+    if _splash_win and _splash_win.winfo_exists():
+        _splash_win.destroy()
+    _splash_win = None
+    root.attributes("-topmost", False)
+    root.deiconify()
     root.mainloop()
 
 
