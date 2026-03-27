@@ -7,18 +7,45 @@ FoxFab internal engineering utilities combined into a single Windows desktop app
 ## Tools
 
 ### BOM Check
-Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) in two passes, then optionally marks which parts have CNC files.
+Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) in two passes:
 
 - **Pass 1 — Stock Parts Check:** Searches the Stock Parts folder (`Z:\...`) using Everything CLI (`es.exe`) and marks matching rows in the `FFMPL` sheet (columns B, G, H).
 - **Pass 2 — Non-Stock PDF/DXF Copy:** For every non-stock part, finds the highest-revision PDF and DXF and copies them to a target folder (typically `202 PDFs_Flats`). Column G is marked if either file was found.
 
 > **Requirement:** Excel must be **closed** before running. The app warns you and asks for confirmation.
 
-#### CNC Column Marker
-After running BOM Check, click **Mark CNC Column** to scan the `205 CNC` folder and mark column H in the `FFMPL` sheet with `X` for every BOM part that has a matching CNC file.
+---
+
+### Doc Prep & Print
+Builds a manufacturing packet from a job folder, marks the BOM's CNC column, and sends everything to the FoxFab printer in the correct order.
+
+#### Workflow
+
+| Step | Action | What happens |
+|---|---|---|
+| 1 | Select job folder → **Build Plan** | App scans for all required documents and shows a summary in the terminal |
+| 2 | Review plan → **Generate Documents** | CNC column is marked in the BOM, then all PDFs are generated into a temp folder |
+| 3 | *(auto)* | Manual Printing list is populated with every generated PDF, duplex pre-set |
+| 4 | Amber bar appears | Lists all documents ready to send — review before committing |
+| 5 | **Send to Printer** | Prints all documents in order via Acrobat COM, or **Cancel Print** to abort |
+
+> In **Simulation Mode** (checkbox), PDFs are saved to a timestamped folder next to the `.exe` instead of printing — useful for review away from the printer.
+
+#### CNC Column Marker (automatic, runs inside Generate Documents)
+
+Before the BOM is exported to PDF, the app automatically scans the `205 CNC` folder and marks column H in the `FFMPL` sheet with `X` for every BOM part that has a matching CNC file. This means the printed BOM already has the CNC column filled in.
 
 **How the CNC folder is found:**
-The folder is located automatically as a sibling of the Target Folder whose name starts with `205` — for example, if Target Folder is `…/J12345-01/202 PDFs_Flats`, the tool looks for `…/J12345-01/205 CNC`.
+The app looks for a folder starting with `205` alongside `204 BOM` inside the job variant folder:
+
+```
+<variant>/
+    204 BOM/        ← BOM Excel lives here
+    205 CNC/        ← found automatically as a sibling
+    202 PDFs_Flats/
+```
+
+If the folder cannot be found automatically, a directory picker opens so you can point to it manually. Cancelling the picker skips CNC marking and continues with the rest of the print job.
 
 **Filename parsing rules:**
 
@@ -36,40 +63,35 @@ The folder is located automatically as a sibling of the Target Folder whose name
 - Rows where column H already contains `S` (stock) are skipped entirely.
 - Every matched row gets `X` written to column H.
 - Any non-S BOM rows with no matching CNC file are listed in the terminal as warnings.
-- The workbook is always saved via xlwings (COM) so all table formatting and structured styles are preserved.
-
----
-
-### Doc Prep & Print
-Builds a manufacturing packet from a job folder and sends it to the FoxFab printer in the correct order.
-
-#### Workflow
-1. Select a job folder and click **Build Plan** — the app scans for all required documents and shows a summary.
-2. Review the plan in the terminal, then click **Generate Documents** (or **Start Simulation** in sim mode).
-3. All PDFs are generated first into a temp folder.
-4. In print mode, a second amber confirmation bar appears listing the documents ready to send.
-5. Click **Send to Printer** to print them in order with a 1-second gap between each, or **Cancel Print** to abort.
-
-> The 1-second gap is a safety buffer. Because Acrobat is launched in **blocking mode** (`subprocess.run`), each document fully closes before the next one is sent — this guarantees correct print order and per-document duplex settings.
+- The workbook is saved via xlwings (COM) so all table formatting and structured styles are preserved.
 
 #### Print order
-| # | Document | Notes |
-|---|---|---|
-| 01 | Fabrication Work Order | Auto-filled from PRF data (job no., name, date, enclosure, qty) |
-| 02 | BOM | All sheets |
-| 03–N | CNC files (duplex) | One PDF per duplex CNC file — prints double-sided |
-| N+1 | CNC Simplex (merged) | All simplex CNC files merged — single-sided |
-| N+2 | PDFs_Flats (merged) | All flat PDFs merged |
-| N+3 | Production Release Form | First sheet only |
-| N+4 | Electrical Pack (pages 1–2) | First two pages only |
-| N+5 | Assemblies (merged) | All assembly PDFs merged |
 
-#### Duplex control
-Printing uses **Adobe Acrobat** (`Acrobat.exe /t`) for per-document duplex control:
-- CNC duplex files → **duplex** (long-edge binding)
-- All other documents → **simplex**
+| # | Document | Duplex | Notes |
+|---|---|---|---|
+| 01 | Fabrication Work Order | Simplex | Auto-filled from PRF data (job no., name, date, enclosure, qty) |
+| 02 | BOM | Simplex | All sheets — CNC column H already marked |
+| 03–N | CNC files | **Duplex** | One PDF per duplex CNC file — prints double-sided |
+| N+1 | CNC Simplex (merged) | Simplex | All simplex CNC files merged |
+| N+2 | PDFs_Flats (merged) | Simplex | All flat PDFs merged |
+| N+3 | Production Release Form | Simplex | First sheet only |
+| N+4 | Electrical Pack (pages 1–2) | Simplex | First two pages only |
+| N+5 | Assemblies (merged) | Simplex | All assembly PDFs merged |
 
-Duplex is set via Windows per-user DEVMODE (level 9 — no admin rights required). Because Acrobat is launched in blocking mode, DEVMODE is always applied before the next document starts. Acrobat is located automatically from common installation paths. If not found, falls back to `os.startfile`.
+#### Printing via Acrobat COM (single instance)
+
+Instead of launching a new Acrobat process for each document (which costs 3–5 s of startup per file), the app opens **one `AcroExch.App` COM instance** at the start of the print run and sends all documents through it:
+
+1. `AcroExch.App` is dispatched once and hidden.
+2. For each document:
+   - DEVMODE is set (duplex or simplex) via `win32print` level-9 — no admin rights required.
+   - `PDDoc.Open` → `OpenAVDoc` → `PrintPages` (silent, no dialog) → close doc.
+   - 0.2 s breath between documents.
+3. `AcroExch.App.Exit()` is called when all documents are done.
+
+Because all jobs are submitted sequentially through the same Acrobat instance, print order is guaranteed by the COM call order — no spooler polling is needed between documents.
+
+**Fallback:** if `win32com` is unavailable or Acrobat's COM interface is not registered, the app falls back to the original per-document `subprocess.run /t` approach with spooler polling between documents. Both Doc Prep & Print and Manual Printing use the same COM path with the same fallback.
 
 #### BOM revision auto-selection
 If a job folder contains multiple BOM Excel files (e.g. after a re-release), the app automatically picks the one with the **highest revision letter** (`rA < rB < rC …`). If no revision suffix is found in any filename, a pick-list prompt is shown as a fallback.
@@ -80,16 +102,25 @@ The Fabrication Work Order PDF is filled automatically using data read from the 
 - Overlays text using PyMuPDF; field positions are tunable via `FWO_*` constants at the top of `app.py`
 - **Preview FWO** button: fills and saves `logs/FWO_preview.pdf` and opens it — use this to tune coordinates without a full print run
 
-#### Simulation Mode
-Checkbox toggle — saves all generated PDFs to a timestamped folder next to the `.exe` instead of printing. Useful for review or testing away from the printer.
+#### Preview BOM button
+Runs the full CNC column marking pass first, then exports the BOM to `logs/BOM_preview.pdf` and opens it. Use this after **Build Plan** to verify column H before committing to a full print run:
+
+1. App locates the `205 CNC` folder (prompts if not found).
+2. CNC marking runs and the BOM is saved.
+3. BOM is exported to PDF via Excel COM.
+4. `logs/BOM_preview.pdf` opens automatically.
 
 #### Manual Printing (collapsible)
-A **▶ Manual Printing** toggle at the bottom of the panel expands a file list for debug/testing:
-- Add individual PDFs via file picker
-- Set duplex per file with a checkbox
-- **Print** button sends a single file immediately (dispatched to a background thread so the UI stays responsive)
-- **Print All** sends all files in list order with 1-second gaps between each
-- Shares the same printer field and terminal as Doc Prep & Print
+
+A **▶ Manual Printing** toggle at the bottom of the panel expands a file list:
+
+- After **Generate Documents**, the list is **automatically populated** with every generated PDF in print order, with duplex pre-set per file (CNC duplex files = on, all others = off).
+- Add individual PDFs manually via file picker, or remove any entry with ✕.
+- **Print** button sends a single file immediately (background thread — UI stays responsive).
+- **Print All** sends all files in list order via the same Acrobat COM session.
+- Shares the printer field and terminal with Doc Prep & Print.
+
+Use Manual Printing to resend any individual document or the full batch without re-running the whole plan.
 
 ---
 
@@ -120,15 +151,15 @@ References the SolidWorks macro for batch updating custom properties and exporti
 | Dependency | Purpose |
 |---|---|
 | Python 3.10+ | Runtime |
-| `xlwings` | Excel COM automation (BOM Check, CNC Marker, PDF export) |
+| `xlwings` | Excel COM automation (BOM Check, CNC marking, PDF export) |
 | `pypdf` | PDF merging |
 | `pymupdf` | FWO text overlay + GALV PDF part number extraction |
 | `openpyxl` | PRF Excel data reading (no COM needed) |
-| `pywin32` | Windows COM + print API |
+| `pywin32` | Windows COM + DEVMODE duplex + print API |
 | `pyinstaller` | Building the `.exe` |
 | `es.exe` | Everything CLI for fast file search (BOM Check) |
-| Adobe Acrobat 2017+ (installed) | Per-document duplex printing via `/t` flag |
-| Microsoft Excel (installed) | BOM Check + CNC Marker + PDF export via xlwings |
+| Adobe Acrobat 2017+ (installed) | Single-instance COM printing with per-document duplex |
+| Microsoft Excel (installed) | BOM Check, CNC marking, BOM/PRF export via xlwings |
 
 Install Python dependencies:
 ```
@@ -206,6 +237,7 @@ Use the **Preview FWO** button to see changes instantly without running a full p
 ## Notes
 
 - The preferred printer name is hardcoded as `PREFERRED_PRINTER` in `app.py`. Update this constant if the printer name changes.
-- BOM Check and CNC Column Marker both require Excel to be **closed** — xlwings opens the file via COM in the background.
+- BOM Check requires Excel to be **closed** — xlwings opens the file via COM in the background.
+- CNC marking (inside Doc Prep & Print) also opens the BOM via xlwings — close Excel before clicking **Generate Documents**.
 - Acrobat is searched in common install paths automatically. If installed in a non-standard location, add the path to `ACROBAT_SEARCH_PATHS` in `app.py`.
 - The `logs/` folder is excluded from git (see `.gitignore`). Log files are local only.
