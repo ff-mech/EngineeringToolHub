@@ -561,11 +561,12 @@ class App:
                     self._set_progress(key, v, mx, lbl)
                 elif tag == "__status__":
                     self._set_status(payload)
-                elif tag == "__cnc_mark_done__":
-                    key, success, tool_name, ll = payload
-                    self._cnc_mark_btn.configure(state="normal")
-                    _master_log.append_section(tool_name, ll)
-                    self._set_status(f"{tool_name} — {'done' if success else 'errors'}")
+                elif tag == "__populate_mp__":
+                    self._mp_clear_all()
+                    for path, duplex in payload:
+                        self._mp_append_file(path, duplex)
+                    if not self._mp_expanded.get():
+                        self._mp_toggle()
                 elif tag == "__print_confirm__":
                     count, names = payload
                     detail = f"{count} document(s): " + ",  ".join(names[:5])
@@ -632,21 +633,6 @@ class App:
 
         self._action_bar(parent, "bom", self._run_bom, self._on_stop,
                          run_label="  Run BOM Check  ")
-
-        # ── CNC Column Marker ─────────────────────────────────────────
-        cnc_card = self._card(parent, "CNC Column Marker")
-        tk.Label(cnc_card,
-                 text="Scans the 205 CNC folder and marks column H in the active BOM sheet.\n"
-                      "CNC folder is auto-detected from the BOM path (200 Mech → 205 CNC).",
-                 bg=C_PANEL, fg=C_SUBTLE, font=F_SMALL, justify="left").pack(anchor="w", pady=(0, 8))
-        self._cnc_mark_btn = tk.Button(
-            cnc_card, text="  Mark CNC Column  ",
-            bg=C_ACCENT, fg="#FFFFFF",
-            activebackground=C_ACCENT_H, activeforeground="#FFFFFF",
-            font=("Segoe UI", 10, "bold"),
-            relief="flat", padx=16, pady=6, cursor="hand2",
-            command=self._run_cnc_mark)
-        self._cnc_mark_btn.pack(anchor="w")
 
         self._terminal(parent, "bom", rows=15)
 
@@ -846,178 +832,6 @@ class App:
 
     # ── CNC Column Marker ─────────────────────────────────────────────
 
-    def _run_cnc_mark(self):
-        wb = self._bom_wb.get().strip()
-        if not wb:
-            messagebox.showwarning(APP_TITLE, "Please select a BOM workbook first.")
-            return
-        if not os.path.isfile(wb):
-            messagebox.showwarning(APP_TITLE, f"File not found:\n{wb}")
-            return
-
-        confirmed = messagebox.askyesno(
-            APP_TITLE,
-            "CNC Column Marker requires the workbook to be CLOSED in Excel.\n\n"
-            "Have you closed the workbook and are ready to proceed?",
-        )
-        if not confirmed:
-            return
-
-        tgt = self._bom_target.get().strip()
-        if not tgt or not os.path.isdir(tgt):
-            messagebox.showwarning(APP_TITLE,
-                "Please select a valid Target Folder — the CNC folder is "
-                "looked up as a sibling of that folder.")
-            return
-
-        self._active_key = "bom"
-        _stop_event.clear()
-        self._cnc_mark_btn.configure(state="disabled")
-        self._set_status("CNC Column Marker — running...")
-
-        t = threading.Thread(
-            target=self._bom_cnc_worker, args=(wb, tgt), daemon=True)
-        t.start()
-
-    def _bom_cnc_worker(self, wb_path: str, target_folder: str):
-        q = self._log_queue
-        log_lines: list[str] = []
-        success = False
-        xw_app = None
-        wb_obj  = None
-
-        def emit(msg: str, tag: str = "info"):
-            ts = datetime.now().strftime("%H:%M:%S")
-            line = f"[{ts}]  {msg}"
-            log_lines.append(line)
-            q.put((tag, line))
-
-        try:
-            if xw is None:
-                raise RuntimeError("xlwings is not installed. Run:  pip install xlwings")
-
-            wb_path_obj = Path(wb_path)
-            emit(f"Opening workbook: {wb_path_obj.name}", "heading")
-            xw_app = xw.App(visible=False, add_book=False)
-            xw_app.display_alerts = False
-            xw_app.screen_updating = False
-
-            try:
-                wb_obj = xw_app.books.open(wb_path)
-            except Exception as e:
-                raise RuntimeError(f"Could not open workbook: {e}")
-
-            sheet_names = [s.name for s in wb_obj.sheets]
-            if BOM_SHEET_NAME not in sheet_names:
-                raise RuntimeError(
-                    f"Sheet '{BOM_SHEET_NAME}' not found. "
-                    f"Available: {sheet_names}")
-
-            ws = wb_obj.sheets[BOM_SHEET_NAME]
-            DATA_START = 6
-
-            # Find last row with data in column A
-            last_row = ws.range(f"A{DATA_START}").end("down").row
-            if last_row > 1_000_000:
-                last_row = DATA_START
-
-            # Read column A and H in bulk
-            col_a = ws.range(f"A{DATA_START}:A{last_row}").value
-            col_h = ws.range(f"H{DATA_START}:H{last_row}").value
-            if not isinstance(col_a, list):
-                col_a = [col_a]
-            if not isinstance(col_h, list):
-                col_h = [col_h]
-
-            # Find CNC folder as a sibling of the target folder starting with "205"
-            tgt_path = Path(target_folder)
-            cnc_folder = next(
-                (d for d in tgt_path.parent.iterdir()
-                 if d.is_dir() and d.name.lower().startswith("205")),
-                None,
-            )
-            if cnc_folder is None:
-                raise RuntimeError(
-                    f"No folder starting with '205' found next to:\n{tgt_path}")
-            emit(f"CNC folder: {cnc_folder}", "info")
-
-            # Enumerate PDF files in CNC folder (top-level only, skip subfolders and Merged)
-            cnc_pdfs = [
-                f for f in cnc_folder.iterdir()
-                if f.is_file()
-                and f.suffix.lower() == ".pdf"
-                and "merged" not in f.name.lower()
-            ]
-            emit(f"Found {len(cnc_pdfs)} CNC PDFs (excluding Merged files)", "info")
-
-            # Parse part numbers from each CNC PDF filename
-            emit("Parsing CNC filenames...", "info")
-            cnc_parts: dict[str, Path] = {}   # part_number -> source file
-            for pdf in cnc_pdfs:
-                parts = _cnc_parse_filename(pdf, emit)
-                for pn in parts:
-                    cnc_parts[pn] = pdf
-
-            emit(f"Resolved {len(cnc_parts)} unique part numbers from CNC folder", "info")
-
-            # Walk BOM rows and mark column H
-            emit("Matching BOM rows to CNC parts...", "heading")
-            matched_rows: list[int] = []
-            unmatched_parts: list[str] = []
-
-            for i, pn_raw in enumerate(col_a):
-                if not pn_raw or not str(pn_raw).strip():
-                    continue
-                pn_str = str(pn_raw).strip()
-                row_idx = DATA_START + i
-
-                # Skip rows already marked S in column H
-                h_val = col_h[i] if i < len(col_h) else None
-                if h_val and str(h_val).strip().upper() == "S":
-                    continue
-
-                pn_clean = _cnc_strip_rev(pn_str)
-
-                if pn_clean in cnc_parts:
-                    ws.range(f"H{row_idx}").value = "X"
-                    matched_rows.append(row_idx)
-                    emit(f"  row {row_idx}  {pn_str:<28}  → X  ({cnc_parts[pn_clean].name})", "ok")
-                else:
-                    unmatched_parts.append(pn_str)
-
-            emit(f"Marked {len(matched_rows)} rows.", "info")
-
-            if unmatched_parts:
-                emit(f"{len(unmatched_parts)} BOM row(s) with no CNC match:", "warn")
-                for pn in unmatched_parts:
-                    emit(f"  - {pn}", "warn")
-
-            wb_obj.save()
-            emit("Workbook saved.", "ok")
-            wb_obj.close()
-            xw_app.quit()
-            xw_app = None
-
-            if unmatched_parts:
-                emit("Some rows unmatched — review the list above.", "warn")
-            else:
-                emit("All non-S rows matched. Done.", "ok")
-
-            success = True
-
-        except StopRequested:
-            emit("Stopped by user.", "warn")
-        except Exception as e:
-            emit(f"ERROR: {e}", "error")
-            for ln in traceback.format_exc().splitlines():
-                emit(ln, "error")
-        finally:
-            try:
-                if xw_app:
-                    xw_app.quit()
-            except Exception:
-                pass
-            q.put(("__cnc_mark_done__", ("bom", success, "CNC Column Marker", log_lines)))
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1074,7 +888,8 @@ class App:
             self._run_dpp, self._on_stop,
             run_label="  Build Plan  ",
             extras=[("Clear Plan", self._dpp_clear_plan),
-                    ("Preview FWO", self._dpp_test_fwo_fill)],
+                    ("Preview FWO", self._dpp_test_fwo_fill),
+                    ("Preview BOM", self._dpp_preview_bom)],
         )
 
         # ── Confirm bar 1: plan review — hidden until plan is built ───────
@@ -1349,6 +1164,19 @@ class App:
         sim     = getattr(self, "_dpp_pending_sim", False)
         if plan is None:
             return
+
+        # Resolve CNC folder on the main thread so we can prompt if missing
+        bom_path = plan.get("bom")
+        if bom_path:
+            cnc_folder = _cnc_find_cnc_folder_for_bom(Path(bom_path))
+            if cnc_folder is None:
+                chosen = filedialog.askdirectory(
+                    title="205 CNC folder not found — select it manually",
+                    mustexist=True,
+                )
+                cnc_folder = Path(chosen) if chosen else None
+            plan["cnc_mark_folder"] = cnc_folder   # None = skip marking
+
         self._dpp_confirm_bar.pack_forget()
         _stop_event.clear()
         self._dpp_print_event.clear()
@@ -1414,6 +1242,76 @@ class App:
             else:
                 messagebox.showerror(APP_TITLE, str(e))
 
+    def _dpp_preview_bom(self):
+        """Run CNC marking, then export the BOM to PDF and open it for review."""
+        folder = self._dpp_folder.get().strip()
+        if not folder or not os.path.isdir(folder):
+            messagebox.showwarning(APP_TITLE,
+                "Select a job folder first so the BOM can be located.")
+            return
+        term = self._panel_terms.get("dpp")
+
+        def log(msg, tag="info"):
+            if term:
+                self._term_write(term, msg, tag)
+
+        try:
+            log("Preview BOM: locating plan...", "info")
+            plan = dpp_build_plan(Path(folder), self)
+            bom_path = plan.get("bom")
+            if not bom_path:
+                messagebox.showwarning(APP_TITLE, "No BOM Excel file found in the job folder.")
+                return
+
+            # ── Run CNC marking first ─────────────────────────────────
+            cnc_folder = _cnc_find_cnc_folder_for_bom(bom_path)
+            if cnc_folder is None:
+                chosen = filedialog.askdirectory(
+                    title="205 CNC folder not found — select it manually",
+                    mustexist=True,
+                )
+                cnc_folder = Path(chosen) if chosen else None
+
+            if cnc_folder:
+                log(f"Preview BOM: running CNC marker on {cnc_folder.name}...", "info")
+                try:
+                    matched, unmatched = _cnc_do_mark(bom_path, cnc_folder, log)
+                    log(f"CNC: marked {matched} row(s).", "ok")
+                    if unmatched:
+                        log(f"CNC: {len(unmatched)} row(s) with no CNC file:", "warn")
+                        for pn in unmatched:
+                            log(f"  - {pn}", "warn")
+                except Exception as e:
+                    log(f"CNC marking failed ({e}) — exporting BOM without marks.", "warn")
+            else:
+                log("Preview BOM: CNC folder skipped.", "warn")
+
+            # ── Export BOM to PDF ─────────────────────────────────────
+            logs_dir = exe_dir() / "logs"
+            logs_dir.mkdir(exist_ok=True)
+            out = logs_dir / "BOM_preview.pdf"
+            log(f"Preview BOM: exporting {bom_path.name}...", "info")
+            excel = _dpp_get_excel()
+            try:
+                wb = excel.Workbooks.Open(str(bom_path))
+                active = wb.ActiveSheet
+                ps = active.PageSetup
+                ps.Orientation = 2
+                ps.Zoom = False
+                ps.FitToPagesWide = 1
+                ps.FitToPagesTall = False
+                active.ExportAsFixedFormat(0, str(out))
+                wb.Close(False)
+            finally:
+                try:
+                    excel.Quit()
+                except Exception:
+                    pass
+            log(f"BOM preview saved: {out}", "ok")
+            os.startfile(str(out))
+        except Exception as e:
+            log(f"BOM preview error: {e}", "error")
+
     def _dpp_worker(self, plan: dict, printer_name: str, simulation: bool):
         q = self._log_queue
         log_lines: list[str] = []
@@ -1463,6 +1361,23 @@ class App:
             else:
                 plan["fwo_filled"] = None
 
+            # ── CNC Column Marker — runs before BOM is exported to PDF ──
+            cnc_folder = plan.get("cnc_mark_folder")
+            if cnc_folder is None:
+                emit("CNC Column Marker: no CNC folder selected — skipping.", "warn")
+            else:
+                bom_path = Path(plan["bom"])
+                emit(f"CNC Column Marker: scanning {cnc_folder.name}...", "heading")
+                try:
+                    matched, unmatched = _cnc_do_mark(bom_path, cnc_folder, emit)
+                    emit(f"CNC: marked {matched} row(s).", "ok")
+                    if unmatched:
+                        emit(f"CNC: {len(unmatched)} row(s) with no CNC file:", "warn")
+                        for pn in unmatched:
+                            emit(f"  - {pn}", "warn")
+                except Exception as e:
+                    emit(f"CNC Column Marker failed ({e}) — continuing without marks.", "warn")
+
             # ── Phase 1: Generate all PDFs ─────────────────────────────
             sections = dpp_build_sections(plan, out_dir)
             gen_total = len(sections)
@@ -1486,6 +1401,15 @@ class App:
                 pdf_files = sorted(out_dir.glob("*.pdf"))
                 print_total = len(pdf_files)
                 emit(f"All {print_total} documents generated. Waiting for print confirmation...", "info")
+
+                # Populate Manual Printing list with generated PDFs + duplex flags
+                mp_jobs = [
+                    (pdf, bool(re.search(r'^\d+_CNC_', pdf.stem)
+                               and "CNC_Simplex" not in pdf.stem))
+                    for pdf in pdf_files
+                ]
+                q.put(("__populate_mp__", mp_jobs))
+
                 q.put(("__print_confirm__",
                        (print_total, [p.stem for p in pdf_files])))
 
@@ -1501,30 +1425,38 @@ class App:
                     except Exception:
                         pass
 
-                acrobat_exe = _find_acrobat()
-                if acrobat_exe:
-                    emit(f"Acrobat found: {acrobat_exe}", "info")
-                else:
-                    emit("Acrobat not found — falling back to default handler (no duplex control)", "warn")
+                # Build ordered job list with duplex flag per file
+                print_jobs = [
+                    (pdf, bool(re.search(r'^\d+_CNC_', pdf.stem)
+                               and "CNC_Simplex" not in pdf.stem))
+                    for pdf in pdf_files
+                ]
 
-                for i, pdf in enumerate(pdf_files):
-                    check_stop()
+                for i, (pdf, _) in enumerate(print_jobs):
+                    emit(f"  ▶  {pdf.name}", "heading")
                     q.put(("__progress__",
                            ("dpp", gen_total + i, gen_total + print_total,
                             f"Printing {i+1}/{print_total}: {pdf.stem}")))
-                    emit(f"  ▶  {pdf.name}", "heading")
-                    # CNC duplex files are named NN_CNC_<stem>.pdf (not CNC_Simplex_Merged)
-                    is_duplex = bool(
-                        re.search(r'^\d+_CNC_', pdf.stem) and
-                        "CNC_Simplex" not in pdf.stem
-                    )
-                    try:
-                        status = _dpp_acrobat_print(pdf, printer_name, is_duplex, acrobat_exe)
-                        emit(f"     ✓  {status}", "ok")
-                    except Exception as e:
-                        emit(f"     ✗  {e}", "error")
-                    if i < print_total - 1:
-                        time.sleep(1.0)   # small buffer after Acrobat closes
+
+                # Try single-instance Acrobat COM session first
+                emit("Opening Acrobat COM session...", "info")
+                com_ok = _dpp_acrobat_print_all_com(print_jobs, printer_name, emit)
+
+                if not com_ok:
+                    # Fallback: per-document subprocess (one Acrobat per file)
+                    emit("COM unavailable — falling back to subprocess per document", "warn")
+                    acrobat_exe = _find_acrobat()
+                    if not acrobat_exe:
+                        emit("Acrobat not found — using default handler (no duplex control)", "warn")
+                    for i, (pdf, is_duplex) in enumerate(print_jobs):
+                        check_stop()
+                        try:
+                            status = _dpp_acrobat_print(pdf, printer_name, is_duplex, acrobat_exe)
+                            emit(f"     ✓  {status}", "ok")
+                        except Exception as e:
+                            emit(f"     ✗  {e}", "error")
+                        if i < print_total - 1:
+                            _dpp_wait_spooler_stable(printer_name)
 
                 q.put(("__progress__",
                        ("dpp", gen_total + print_total, gen_total + print_total, "Done")))
@@ -1647,8 +1579,8 @@ class App:
         for p in paths:
             self._mp_append_file(Path(p))
 
-    def _mp_append_file(self, path: Path):
-        duplex_var = tk.BooleanVar(value=False)
+    def _mp_append_file(self, path: Path, duplex: bool = False):
+        duplex_var = tk.BooleanVar(value=duplex)
         row = tk.Frame(self._mp_inner, bg=C_PANEL)
         row.pack(fill="x", pady=1)
 
@@ -1732,27 +1664,33 @@ class App:
         self._active_key = "dpp"
 
         def worker():
-            acrobat = _find_acrobat()
-            if win32print and printer:
-                try:
-                    win32print.SetDefaultPrinter(printer)
-                except Exception:
-                    pass
-            q = self._log_queue
-            total = len(files)
-            for i, entry in enumerate(files):
-                path   = entry["path"]
-                duplex = entry["duplex_var"].get()
-                q.put(("info",
-                    f"[{i+1}/{total}]  {path.name}  ({'duplex' if duplex else 'simplex'})"))
-                try:
-                    status = _dpp_acrobat_print(path, printer, duplex, acrobat)
-                    q.put(("ok", f"  ✓  {status}"))
-                except Exception as e:
-                    q.put(("error", f"  ✗  {e}"))
-                if i < total - 1:
-                    time.sleep(1.0)   # small buffer after Acrobat closes
-            q.put(("ok", "Print All complete."))
+            if pythoncom:
+                pythoncom.CoInitialize()
+            q     = self._log_queue
+            jobs  = [(e["path"], e["duplex_var"].get()) for e in files]
+            total = len(jobs)
+
+            def emit(msg, tag="info"):
+                q.put((tag, msg))
+
+            for i, (path, duplex) in enumerate(jobs):
+                emit(f"[{i+1}/{total}]  {path.name}  ({'duplex' if duplex else 'simplex'})")
+
+            com_ok = _dpp_acrobat_print_all_com(jobs, printer, emit)
+
+            if not com_ok:
+                emit("COM unavailable — falling back to subprocess per document", "warn")
+                acrobat = _find_acrobat()
+                for i, (path, duplex) in enumerate(jobs):
+                    try:
+                        status = _dpp_acrobat_print(path, printer, duplex, acrobat)
+                        emit(f"  ✓  {status}", "ok")
+                    except Exception as e:
+                        emit(f"  ✗  {e}", "error")
+                    if i < total - 1:
+                        _dpp_wait_spooler_stable(printer)
+
+            emit("Print All complete.", "ok")
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -2132,6 +2070,39 @@ def _dpp_set_devmode_duplex(printer_name: str, duplex: bool) -> bool:
         return False
 
 
+def _dpp_wait_spooler_stable(printer_name: str, timeout: float = 60.0):
+    """
+    Block until the printer has no jobs in JOB_STATUS_SPOOLING state, then return.
+
+    Called after each Acrobat print submission so that large PDFs (which take
+    longer to spool) cannot be overtaken in the queue by the next document.
+    Falls back to a 3.5-second sleep if win32print is unavailable or the
+    printer cannot be opened.
+    """
+    JOB_STATUS_SPOOLING = 0x0004
+    POLL_INTERVAL       = 0.5   # seconds between queue checks
+
+    if not win32print:
+        time.sleep(3.5)
+        return
+
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            h = win32print.OpenPrinter(printer_name)
+            try:
+                jobs = win32print.EnumJobs(h, 0, 999, 1)
+            finally:
+                win32print.ClosePrinter(h)
+            if not any(j["Status"] & JOB_STATUS_SPOOLING for j in jobs):
+                return   # all jobs fully spooled — safe to send next document
+        except Exception:
+            time.sleep(3.5)
+            return
+        time.sleep(POLL_INTERVAL)
+    # Timeout reached — proceed anyway rather than blocking forever
+
+
 def _dpp_acrobat_print(pdf_path: Path, printer_name: str, duplex: bool,
                         acrobat_exe: str | None) -> str:
     """Print one PDF via Acrobat with the specified duplex setting.
@@ -2157,6 +2128,87 @@ def _dpp_acrobat_print(pdf_path: Path, printer_name: str, duplex: bool,
     else:
         os.startfile(str(pdf_path), "print")
         return f"sent via default handler (no duplex control)"
+
+
+def _dpp_acrobat_print_all_com(
+    print_jobs: list[tuple[Path, bool]],
+    printer_name: str,
+    emit,
+) -> bool:
+    """
+    Print all PDFs through a SINGLE Acrobat COM instance that stays open for the
+    entire run.  Eliminates the 3-5 s Acrobat startup cost per document.
+
+    print_jobs : list of (pdf_path, is_duplex)
+    emit       : callable(msg, tag) for terminal output
+    Returns True  if all jobs were dispatched via COM.
+    Returns False if COM is unavailable so the caller can fall back to subprocess.
+    """
+    if win32com is None:
+        return False
+
+    try:
+        acro_app = win32com.client.Dispatch("AcroExch.App")
+        acro_app.Hide()
+    except Exception as e:
+        emit(f"Acrobat COM init failed ({e}) — falling back to subprocess", "warn")
+        return False
+
+    try:
+        for i, (pdf_path, is_duplex) in enumerate(print_jobs):
+            devmode_ok = _dpp_set_devmode_duplex(printer_name, is_duplex)
+            mode_str = ("duplex" if is_duplex else "simplex") + (
+                "" if devmode_ok else " [devmode failed]")
+
+            pddoc = None
+            avdoc = None
+            try:
+                pddoc = win32com.client.Dispatch("AcroExch.PDDoc")
+                if not pddoc.Open(str(pdf_path)):
+                    emit(f"  ✗  COM could not open: {pdf_path.name}", "error")
+                    continue
+
+                n_pages = pddoc.GetNumPages()
+                avdoc   = pddoc.OpenAVDoc("")
+                if avdoc is None:
+                    emit(f"  ✗  Could not get AVDoc: {pdf_path.name}", "error")
+                    continue
+
+                # PrintPages(nFirstPage, nLastPage, nPrintFlags, bAnnotations, bShrinkToFit)
+                # nPrintFlags = 2  →  kAVPrintSilent: no dialog, no progress bar
+                ok = avdoc.PrintPages(0, n_pages - 1, 2, True, False)
+                if ok:
+                    emit(f"  ✓  sent via Acrobat COM ({mode_str})", "ok")
+                else:
+                    emit(f"  ✗  PrintPages returned False for {pdf_path.name}", "error")
+
+            except Exception as e:
+                emit(f"  ✗  {pdf_path.name}: {e}", "error")
+            finally:
+                if avdoc:
+                    try:
+                        avdoc.Close(True)
+                    except Exception:
+                        pass
+                if pddoc:
+                    try:
+                        pddoc.Close()
+                    except Exception:
+                        pass
+
+            # Small breath between docs — no spooler poll needed because
+            # COM PrintPages submits jobs sequentially through one instance,
+            # so queue order is already guaranteed by call order.
+            if i < len(print_jobs) - 1:
+                time.sleep(0.2)
+
+    finally:
+        try:
+            acro_app.Exit()
+        except Exception:
+            pass
+
+    return True
 
 
 def dpp_build_plan(job_folder: Path, app: "App") -> dict:
@@ -2515,6 +2567,113 @@ def _cnc_parse_filename(pdf_path: Path, emit=None) -> list[str]:
         emit(f"  {pdf_path.name}  →  unrecognised pattern — skipped", "warn")
     return []
 
+
+def _cnc_do_mark(bom_path: Path, cnc_folder: Path, emit) -> tuple[int, list[str]]:
+    """
+    Open the BOM workbook via xlwings, scan cnc_folder for PDFs, and write 'X'
+    to column H for every matching non-S row.
+
+    Returns (matched_count, unmatched_part_numbers).
+    Raises RuntimeError on hard failures (missing sheet, xlwings unavailable, etc.).
+    The caller is responsible for xlwings COM initialisation if needed.
+    """
+    if xw is None:
+        raise RuntimeError("xlwings is not installed. Run:  pip install xlwings")
+
+    DATA_START = 6
+
+    xw_app = xw.App(visible=False, add_book=False)
+    xw_app.display_alerts = False
+    xw_app.screen_updating = False
+    try:
+        try:
+            wb = xw_app.books.open(str(bom_path))
+        except Exception as e:
+            raise RuntimeError(f"Could not open BOM workbook: {e}")
+
+        sheet_names = [s.name for s in wb.sheets]
+        if BOM_SHEET_NAME not in sheet_names:
+            raise RuntimeError(
+                f"Sheet '{BOM_SHEET_NAME}' not found. Available: {sheet_names}")
+
+        ws = wb.sheets[BOM_SHEET_NAME]
+
+        last_row = ws.range(f"A{DATA_START}").end("down").row
+        if last_row > 1_000_000:
+            last_row = DATA_START
+
+        col_a = ws.range(f"A{DATA_START}:A{last_row}").value
+        col_h = ws.range(f"H{DATA_START}:H{last_row}").value
+        if not isinstance(col_a, list):
+            col_a = [col_a]
+        if not isinstance(col_h, list):
+            col_h = [col_h]
+
+        # Build part-number → file mapping from CNC folder
+        cnc_pdfs = [
+            f for f in cnc_folder.iterdir()
+            if f.is_file()
+            and f.suffix.lower() == ".pdf"
+            and "merged" not in f.name.lower()
+        ]
+        emit(f"Found {len(cnc_pdfs)} CNC PDFs in {cnc_folder.name}", "info")
+
+        cnc_parts: dict[str, Path] = {}
+        for pdf in cnc_pdfs:
+            for pn in _cnc_parse_filename(pdf, emit):
+                cnc_parts[pn] = pdf
+
+        emit(f"Resolved {len(cnc_parts)} unique part numbers from CNC folder", "info")
+        emit("Matching BOM rows...", "heading")
+
+        matched: list[int] = []
+        unmatched: list[str] = []
+
+        for i, pn_raw in enumerate(col_a):
+            if not pn_raw or not str(pn_raw).strip():
+                continue
+            pn_str = str(pn_raw).strip()
+            row_idx = DATA_START + i
+
+            h_val = col_h[i] if i < len(col_h) else None
+            if h_val and str(h_val).strip().upper() == "S":
+                continue
+
+            pn_clean = _cnc_strip_rev(pn_str)
+            if pn_clean in cnc_parts:
+                ws.range(f"H{row_idx}").value = "X"
+                matched.append(row_idx)
+                emit(f"  row {row_idx}  {pn_str:<28}  → X  ({cnc_parts[pn_clean].name})", "ok")
+            else:
+                unmatched.append(pn_str)
+
+        wb.save()
+        wb.close()
+        return len(matched), unmatched
+
+    finally:
+        try:
+            xw_app.quit()
+        except Exception:
+            pass
+
+
+def _cnc_find_cnc_folder_for_bom(bom_path: Path) -> Path | None:
+    """
+    Locate the 205 CNC folder that sits alongside the BOM.
+    Structure:  <variant>/204 BOM/<bom_file>
+                <variant>/205 CNC/          ← what we want
+    So we look for a '205' sibling of bom_path.parent.parent.
+    """
+    variant = bom_path.parent.parent
+    try:
+        return next(
+            (d for d in variant.iterdir()
+             if d.is_dir() and d.name.lower().startswith("205")),
+            None,
+        )
+    except Exception:
+        return None
 
 
 # ═════════════════════════════════════════════════════════════════════
