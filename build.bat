@@ -19,7 +19,7 @@ python --version >nul 2>&1
 if errorlevel 1 (
     echo  [ERROR] Python not found. Make sure Python is on your PATH.
     popd
-pause
+    pause
     exit /b 1
 )
 
