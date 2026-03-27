@@ -1,2 +1,13 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Windows batch scripts — keep CRLF
+*.bat text eol=crlf
+
+# VB macros — keep CRLF (Windows line endings required by VBA editor)
+*.bas text eol=crlf
+
+# Binaries — no diff, no line-ending conversion
+*.exe binary
+*.pdf binary
+*.swp binary
