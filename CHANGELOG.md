@@ -5,6 +5,33 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.1.0] — 2026-03-30
+
+### Added
+
+**How to Use tab**
+- New sidebar tab that launches on startup by default
+- Embedded PDF viewer renders `Engineering_Tool_Hub.pdf` directly inside the app using PyMuPDF (fitz) — no external viewer required
+- Prev / Next page navigation with a live page counter
+- Vertically scrollable canvas with mousewheel support
+
+**SW Batch PDF Export tab**
+- Step-by-step guide for using SolidWorks Task Scheduler to batch-export drawings as PDFs
+- Tips card covering folder-mode export, sub-folder recursion, and paper size behaviour
+
+**Training Materials tab**
+- Lists all documents in `tools/EngineeringDesignPackage/` and prints them double-sided to the preferred printer in a single background thread
+- Per-file status label updates in real time while printing; button disabled until the job completes
+- Reuses existing `_dpp_acrobat_print` + `_dpp_set_devmode_duplex` infrastructure — no paper size override, letting the printer decide
+- "Open FoxFab Design Tips" button opens `tools/FoxFab_Design_Tips.docx` in the default application
+
+### Changed
+
+- **Tab order redesigned** for workflow intuitiveness: How to Use → Bom Filler → Doc Prep & Print → SW Batch Update → SW Batch PDF Export → File Logger → Training Materials
+- **Default landing tab** changed from Bom Filler to How to Use so new users are immediately oriented
+
+---
+
 ## [1.0.0] — 2026-03-27
 
 ### Added

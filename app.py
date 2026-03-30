@@ -5,6 +5,7 @@ FoxFab internal engineering utilities, combined into one application.
 Tools:
   • Bom Filler         – marks stock parts, copies non-stock PDFs/DXFs
   • Doc Prep & Print   – builds and prints (or simulates) a manufacturing packet
+  • File Logger        – tracks SolidWorks part numbers across job folders (Parts Tracker)
   • SW Batch Update    – updates SolidWorks custom properties and exports DXFs
 """
 
@@ -14,6 +15,7 @@ import os
 import re
 import sys
 import time
+import base64
 import shutil
 import queue
 import threading
@@ -41,7 +43,7 @@ def _make_splash() -> tuple["tk.Tk", "tk.Toplevel"]:
     tk.Label(sp, text="Engineering Tool Hub",
              bg="#1E2B40", fg="#FFFFFF",
              font=("Segoe UI", 14, "bold")).pack(pady=(26, 2))
-    tk.Label(sp, text="v1.0.0  —  FoxFab",
+    tk.Label(sp, text="v1.1.0  —  FoxFab",
              bg="#1E2B40", fg="#64748B",
              font=("Segoe UI", 9)).pack()
     tk.Label(sp, text="Starting up…",
@@ -81,9 +83,10 @@ except Exception:
     PdfWriter = None
 
 try:
-    import fitz as _fitz   # PyMuPDF — FWO text overlay
+    import fitz as _fitz   # PyMuPDF — FWO text overlay + PDF viewer
 except Exception:
     _fitz = None
+
 
 try:
     import openpyxl as _openpyxl   # PRF data reading (no COM needed)
@@ -96,7 +99,7 @@ except Exception:
 # ═════════════════════════════════════════════════════════════════════
 
 APP_TITLE   = "Engineering Tool Hub"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 PREFERRED_PRINTER  = r"\\NPSVR05\FoxFab (Konica Bizhub C360i)"
 STOCK_PARTS_FOLDER = r"Z:\FOXFAB_DATA\ENGINEERING\0 PRODUCTS\300 Stock Parts\PDFs & Flats"
@@ -254,9 +257,13 @@ def check_stop():
 
 class App:
     TOOLS = [
-        ("bom", "Bom Filler"),
-        ("dpp", "Doc Prep & Print"),
-        ("sw",  "SW Batch Update"),
+        ("htu",   "How to Use"),
+        ("bom",   "Bom Filler"),
+        ("dpp",   "Doc Prep & Print"),
+        ("sw",    "SW Batch Update"),
+        ("swpdf", "SW Batch PDF Export"),
+        ("fl",    "File Logger"),
+        ("tm",    "Training Materials"),
     ]
 
     def __init__(self, root: tk.Tk):
@@ -276,7 +283,7 @@ class App:
 
         self._configure_styles()
         self._build_layout()
-        self._switch_tool("bom")
+        self._switch_tool("htu")
         self._poll_log_queue()
 
     # ── styles ────────────────────────────────────────────────────────
@@ -316,9 +323,13 @@ class App:
         self._panels: dict[str, tk.Frame] = {}
         self._panel_built: set[str] = set()
         self._builders: dict[str, object] = {
-            "bom": self._build_bom_panel,
-            "dpp": self._build_dpp_panel,
-            "sw":  self._build_sw_panel,
+            "htu":   self._build_htu_panel,
+            "bom":   self._build_bom_panel,
+            "dpp":   self._build_dpp_panel,
+            "sw":    self._build_sw_panel,
+            "swpdf": self._build_swpdf_panel,
+            "fl":    self._build_fl_panel,
+            "tm":    self._build_tm_panel,
         }
         for key, _ in self.TOOLS:
             frame = tk.Frame(self._content, bg=C_BG)
@@ -1531,6 +1542,99 @@ class App:
 
 
 # ═════════════════════════════════════════════════════════════════════
+#  FILE LOGGER PANEL
+# ═════════════════════════════════════════════════════════════════════
+
+    def _build_fl_panel(self, parent):
+        self._section_header(
+            parent,
+            "File Logger",
+            "Track SolidWorks part files across job folders — find gaps, orphans, and next available numbers.")
+
+        script_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "tools", "File Logger", "parts_tracker.py")
+
+        # ── Launch card ───────────────────────────────────────────────
+        card = self._card(parent, "Launch")
+
+        desc = (
+            "Parts Tracker is a standalone window that scans your network job folders, "
+            "maintains a local database of SolidWorks part numbers, and helps you find "
+            "the next available number in any category."
+        )
+        tk.Label(card, text=desc, bg=C_PANEL, fg=C_SUBTLE,
+                 font=F_BODY, wraplength=680, justify="left",
+                 anchor="w").pack(fill="x", pady=(0, 12))
+
+        btn_row = tk.Frame(card, bg=C_PANEL)
+        btn_row.pack(fill="x")
+
+        self._fl_status_var = tk.StringVar(value="")
+        self._fl_proc: subprocess.Popen | None = None
+
+        def _launch():
+            # If already running, bring focus by doing nothing (process manages its own window)
+            if self._fl_proc is not None and self._fl_proc.poll() is None:
+                self._fl_status_var.set("Already running.")
+                return
+            if not os.path.isfile(script_path):
+                self._fl_status_var.set(f"Script not found: {script_path}")
+                return
+            try:
+                self._fl_proc = subprocess.Popen(
+                    [sys.executable, script_path],
+                    cwd=os.path.dirname(script_path),
+                    creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+                )
+                self._fl_status_var.set("Launched.")
+            except Exception as exc:
+                self._fl_status_var.set(f"Error: {exc}")
+
+        tk.Button(btn_row, text="  Launch Parts Tracker  ",
+                  font=("Segoe UI", 10, "bold"),
+                  bg=C_ACCENT, fg="white",
+                  activebackground=C_ACCENT_H, activeforeground="white",
+                  relief="flat", cursor="hand2", pady=6,
+                  command=_launch).pack(side="left")
+
+        tk.Label(btn_row, textvariable=self._fl_status_var,
+                 bg=C_PANEL, fg=C_SUBTLE, font=F_SMALL).pack(side="left", padx=12)
+
+        # ── Features card ─────────────────────────────────────────────
+        feat_card = self._card(parent, "Features")
+        for bullet in [
+            "Scans .sldprt and .sldasm files across all job folders on the network drive.",
+            "Per-user prefix filtering — see only your own parts by default.",
+            "Gap-aware next-number suggestions — reuses the lowest available number first.",
+            "Orphan detection: identifies part files not tracked in any job folder.",
+            "Archive classification: separates parts inside archive folders from active ones.",
+            "Live filesystem watcher refreshes automatically when files change on disk.",
+        ]:
+            row = tk.Frame(feat_card, bg=C_PANEL)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text="•", bg=C_PANEL, fg=C_ACCENT,
+                     font=F_BODY).pack(side="left", padx=(0, 8))
+            tk.Label(row, text=bullet, bg=C_PANEL, fg=C_TEXT,
+                     font=F_BODY, anchor="w").pack(side="left")
+
+        # ── Requirements card ─────────────────────────────────────────
+        req_card = self._card(parent, "Requirements")
+        for req, note in [
+            ("Python 3.10+",  "with PyQt6, openpyxl, and requests installed"),
+            ("Everything",    "HTTP Server must be enabled on port 8080 (voidtools.com)"),
+            ("Network drive", r"Z:\FOXFAB_DATA\ENGINEERING\2 JOBS must be accessible"),
+        ]:
+            row = tk.Frame(req_card, bg=C_PANEL)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=req, bg=C_PANEL, fg=C_TEXT,
+                     font=("Segoe UI", 10, "bold"), width=16,
+                     anchor="w").pack(side="left")
+            tk.Label(row, text=note, bg=C_PANEL, fg=C_SUBTLE,
+                     font=F_BODY, anchor="w").pack(side="left")
+
+
+# ═════════════════════════════════════════════════════════════════════
 #  SW BATCH UPDATE PANEL
 # ═════════════════════════════════════════════════════════════════════
 
@@ -1597,6 +1701,236 @@ class App:
                      font=F_BODY).pack(side="left", padx=(0, 8))
             tk.Label(row, text=bullet, bg=C_PANEL, fg=C_TEXT,
                      font=F_BODY, anchor="w").pack(side="left")
+
+    # ── How to Use panel ──────────────────────────────────────────────
+
+    def _build_htu_panel(self, parent):
+        self._section_header(
+            parent,
+            "How to Use",
+            "Engineering Tool Hub — user manual.")
+
+        pdf_path = Path(exe_dir()) / "Engineering_Tool_Hub.pdf"
+
+        if not pdf_path.is_file() or _fitz is None:
+            card = self._card(parent, "User Manual")
+            msg = ("Engineering_Tool_Hub.pdf not found."
+                   if not pdf_path.is_file()
+                   else "PyMuPDF (fitz) is not available.")
+            tk.Label(card, text=msg, bg=C_PANEL, fg="#EF4444",
+                     font=F_BODY).pack(anchor="w")
+            return
+
+        # state
+        doc = _fitz.open(str(pdf_path))
+        total_pages = len(doc)
+        state = {"page": 0, "photo": None}
+
+        # ── nav bar ───────────────────────────────────────────────────
+        nav = tk.Frame(parent, bg=C_BG, pady=4)
+        nav.pack(fill="x", padx=26)
+
+        btn_prev = tk.Button(nav, text="◀  Prev", font=F_BODY,
+                             bg=C_PANEL, fg=C_ACCENT, relief="solid", bd=1,
+                             cursor="hand2", width=9)
+        btn_prev.pack(side="left")
+
+        page_lbl = tk.Label(nav, text=f"Page 1 / {total_pages}",
+                            bg=C_BG, fg=C_TEXT, font=F_BODY, width=16)
+        page_lbl.pack(side="left", padx=12)
+
+        btn_next = tk.Button(nav, text="Next  ▶", font=F_BODY,
+                             bg=C_PANEL, fg=C_ACCENT, relief="solid", bd=1,
+                             cursor="hand2", width=9)
+        btn_next.pack(side="left")
+
+        # ── scrollable canvas ─────────────────────────────────────────
+        canvas_frame = tk.Frame(parent, bg=C_BG)
+        canvas_frame.pack(fill="both", expand=True, padx=26, pady=(4, 12))
+
+        vbar = tk.Scrollbar(canvas_frame, orient="vertical")
+        vbar.pack(side="right", fill="y")
+
+        canvas = tk.Canvas(canvas_frame, bg="#F1F5F9",
+                           highlightthickness=0,
+                           yscrollcommand=vbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        vbar.config(command=canvas.yview)
+
+        canvas.bind("<MouseWheel>",
+                    lambda e: canvas.yview_scroll(-1 * (e.delta // 120), "units"))
+
+        img_id = canvas.create_image(0, 0, anchor="nw")
+
+        def _render(page_idx: int):
+            page = doc[page_idx]
+            pix = page.get_pixmap(matrix=_fitz.Matrix(1.5, 1.5))
+            png_b64 = base64.b64encode(pix.tobytes("png"))
+            photo = tk.PhotoImage(data=png_b64)
+            state["photo"] = photo           # keep reference alive
+            canvas.itemconfig(img_id, image=photo)
+            canvas.config(scrollregion=(0, 0, pix.width, pix.height))
+            canvas.yview_moveto(0)
+            page_lbl.config(text=f"Page {page_idx + 1} / {total_pages}")
+            btn_prev.config(state="normal" if page_idx > 0 else "disabled")
+            btn_next.config(state="normal" if page_idx < total_pages - 1 else "disabled")
+
+        def _go_prev():
+            if state["page"] > 0:
+                state["page"] -= 1
+                _render(state["page"])
+
+        def _go_next():
+            if state["page"] < total_pages - 1:
+                state["page"] += 1
+                _render(state["page"])
+
+        btn_prev.config(command=_go_prev)
+        btn_next.config(command=_go_next)
+
+        _render(0)
+
+    # ── SW Batch PDF Export panel ──────────────────────────────────────
+
+    def _build_swpdf_panel(self, parent):
+        self._section_header(
+            parent,
+            "SW Batch PDF Export",
+            "Use SolidWorks Task Scheduler to batch-export drawings as PDFs.")
+
+        # ── How to Use card ───────────────────────────────────────────
+        card = self._card(parent, "How to Use Task Scheduler")
+
+        steps = [
+            ("1", "Open SolidWorks Task Scheduler  (Start → SolidWorks Tools → Task Scheduler)."),
+            ("2", "Click  Export Files  in the left panel."),
+            ("3", "Under Task Details, set Output Format to  Adobe Portable Document Format (*.pdf)."),
+            ("4", "Click  Add Files  or  Add Folder  and select the drawings you want to export."),
+            ("5", "Under Output Folder, choose where the PDFs should be saved."),
+            ("6", "Set Schedule to  Run Now  (or pick a future time)."),
+            ("7", "Click  Add Task, then  Run  (or wait for the scheduled time)."),
+        ]
+        for num, text in steps:
+            row = tk.Frame(card, bg=C_PANEL)
+            row.pack(fill="x", pady=3)
+            tk.Label(row, text=num, bg=C_ACCENT, fg="white",
+                     font=("Segoe UI", 9, "bold"),
+                     width=2, anchor="center").pack(side="left", padx=(0, 10))
+            tk.Label(row, text=text, bg=C_PANEL, fg=C_TEXT,
+                     font=F_BODY, anchor="w", wraplength=820,
+                     justify="left").pack(side="left", fill="x", expand=True)
+
+        # ── Tips card ─────────────────────────────────────────────────
+        tips_card = self._card(parent, "Tips")
+        for bullet in [
+            "SolidWorks does NOT need to be open — Task Scheduler runs independently.",
+            "Use  Add Folder  to queue an entire folder of drawings at once.",
+            "Enable  Include sub-folders  to recurse into sub-directories.",
+            "Paper size and orientation are taken from the drawing sheet format, not set here.",
+        ]:
+            row = tk.Frame(tips_card, bg=C_PANEL)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text="•", bg=C_PANEL, fg=C_ACCENT,
+                     font=F_BODY).pack(side="left", padx=(0, 8))
+            tk.Label(row, text=bullet, bg=C_PANEL, fg=C_TEXT,
+                     font=F_BODY, anchor="w").pack(side="left")
+
+    # ── Training Materials panel ───────────────────────────────────────
+
+    def _build_tm_panel(self, parent):
+        self._section_header(
+            parent,
+            "Training Materials",
+            "Print reference documents and open design guidelines.")
+
+        pkg_dir  = Path(exe_dir()) / "tools" / "EngineeringDesignPackage"
+        tips_doc = Path(exe_dir()) / "tools" / "FoxFab_Design_Tips.docx"
+
+        # ── Engineering Design Package card ───────────────────────────
+        pkg_card = self._card(parent, "Engineering Design Package")
+
+        pdfs = sorted(pkg_dir.glob("*.pdf")) if pkg_dir.is_dir() else []
+
+        if pdfs:
+            desc = tk.Label(pkg_card,
+                            text=(f"{len(pdfs)} reference documents will be sent to "
+                                  f"{PREFERRED_PRINTER.split(chr(92))[-1]}  —  double-sided."),
+                            bg=C_PANEL, fg=C_SUBTLE, font=F_BODY, anchor="w", wraplength=760)
+            desc.pack(fill="x", pady=(0, 8))
+
+            for pdf in pdfs:
+                row = tk.Frame(pkg_card, bg=C_PANEL)
+                row.pack(fill="x", pady=1)
+                tk.Label(row, text="•", bg=C_PANEL, fg=C_ACCENT,
+                         font=F_BODY).pack(side="left", padx=(0, 8))
+                tk.Label(row, text=pdf.name, bg=C_PANEL, fg=C_TEXT,
+                         font=F_BODY, anchor="w").pack(side="left")
+
+            status_lbl = tk.Label(pkg_card, text="", bg=C_PANEL, fg=C_SUBTLE,
+                                  font=F_BODY, anchor="w")
+            status_lbl.pack(fill="x", pady=(8, 0))
+
+            print_btn = tk.Button(pkg_card, text="Print All — Double-Sided",
+                                  font=("Segoe UI", 10, "bold"),
+                                  bg=C_ACCENT, fg="white", relief="flat",
+                                  cursor="hand2", padx=14, pady=6)
+            print_btn.pack(anchor="w", pady=(6, 0))
+
+            def _start_print():
+                print_btn.config(state="disabled")
+                status_lbl.config(text="Starting print job…", fg=C_SUBTLE)
+
+                def _worker():
+                    acrobat = _find_acrobat()
+                    printer = PREFERRED_PRINTER
+                    _dpp_set_devmode_duplex(printer, True)
+                    total = len(pdfs)
+                    for i, pdf in enumerate(pdfs, 1):
+                        parent.after(0, lambda n=pdf.name, idx=i:
+                                     status_lbl.config(
+                                         text=f"Printing {idx}/{total}: {n}…",
+                                         fg=C_SUBTLE))
+                        try:
+                            _dpp_acrobat_print(pdf, printer, True, acrobat)
+                        except Exception as exc:
+                            parent.after(0, lambda e=str(exc):
+                                         status_lbl.config(
+                                             text=f"Error: {e}", fg="#EF4444"))
+                            parent.after(0, lambda: print_btn.config(state="normal"))
+                            return
+                    parent.after(0, lambda:
+                                 status_lbl.config(
+                                     text=f"Done — {total} document(s) sent to printer.",
+                                     fg="#16A34A"))
+                    parent.after(0, lambda: print_btn.config(state="normal"))
+
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+
+            print_btn.config(command=_start_print)
+        else:
+            tk.Label(pkg_card,
+                     text="No PDFs found in tools/EngineeringDesignPackage/.",
+                     bg=C_PANEL, fg="#EF4444", font=F_BODY).pack(anchor="w")
+
+        # ── Design Reference card ─────────────────────────────────────
+        ref_card = self._card(parent, "Design Reference")
+
+        tk.Label(ref_card,
+                 text="Open the FoxFab design tips and best practices document.",
+                 bg=C_PANEL, fg=C_SUBTLE, font=F_BODY, anchor="w").pack(fill="x", pady=(0, 8))
+
+        if tips_doc.is_file():
+            tk.Button(ref_card, text="Open FoxFab Design Tips",
+                      font=("Segoe UI", 10, "bold"),
+                      bg=C_ACCENT, fg="white", relief="flat",
+                      cursor="hand2", padx=14, pady=6,
+                      command=lambda: os.startfile(str(tips_doc))
+                      ).pack(anchor="w")
+        else:
+            tk.Label(ref_card,
+                     text="FoxFab_Design_Tips.docx not found in tools/.",
+                     bg=C_PANEL, fg="#EF4444", font=F_BODY).pack(anchor="w")
 
 
 # ═════════════════════════════════════════════════════════════════════

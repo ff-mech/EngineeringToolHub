@@ -9,9 +9,13 @@ FoxFab internal engineering utilities combined into a single Windows desktop app
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Tools](#tools)
+  - [How to Use](#how-to-use)
   - [Bom Filler](#bom-filler)
   - [Doc Prep & Print](#doc-prep--print)
   - [SW Batch Update](#sw-batch-update)
+  - [SW Batch PDF Export](#sw-batch-pdf-export)
+  - [File Logger](#file-logger)
+  - [Training Materials](#training-materials)
 - [App Features](#app-features)
 - [Requirements](#requirements)
 - [Build](#build)
@@ -22,22 +26,24 @@ FoxFab internal engineering utilities combined into a single Windows desktop app
 
 ## Overview
 
-Engineering Tool Hub wraps three manufacturing workflow tools into one professional Windows desktop app — sidebar navigation, per-tool terminal output, progress bars, stop controls, and a master log.
+Engineering Tool Hub wraps FoxFab manufacturing workflow tools into one professional Windows desktop app — sidebar navigation, per-tool terminal output, progress bars, stop controls, and a master log.
 
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  Engineering Tool Hub                                   │
-│  ┌──────────────┬────────────────────────────────────┐  │
-│  │              │                                    │  │
-│  │  Bom Filler   │   [ Tool Panel ]                   │  │
-│  │              │   Config  ─────────────────────    │  │
-│  │  Doc Prep    │   ▶ Run   ■ Stop   [======   ]     │  │
-│  │  & Print     │                                    │  │
-│  │              │   ┌────────────────────────────┐   │  │
-│  │  SW Batch    │   │ terminal output...         │   │  │
-│  │  Update      │   │ [INFO]  pass 1 complete    │   │  │
-│  │              │   │ [OK]    3 files copied     │   │  │
-│  └──────────────┴───┴────────────────────────────┘   │  │
+│  ┌────────────────┬──────────────────────────────────┐  │
+│  │                │                                  │  │
+│  │  How to Use    │   [ Tool Panel ]                 │  │
+│  │  Bom Filler    │   Config  ───────────────────    │  │
+│  │  Doc Prep      │   ▶ Run   ■ Stop   [======  ]   │  │
+│  │  & Print       │                                  │  │
+│  │  SW Batch      │   ┌──────────────────────────┐   │  │
+│  │  Update        │   │ terminal output...       │   │  │
+│  │  SW Batch PDF  │   │ [INFO]  pass 1 complete  │   │  │
+│  │  Export        │   │ [OK]    3 files copied   │   │  │
+│  │  File Logger   │   └──────────────────────────┘   │  │
+│  │  Training Mat. │                                  │  │
+│  └────────────────┴──────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -58,6 +64,17 @@ Each tool runs in a background thread — the UI stays responsive throughout. Ou
 ---
 
 ## Tools
+
+### How to Use
+
+Opens the Engineering Tool Hub user manual (`Engineering_Tool_Hub.pdf`) directly inside the app — no external viewer needed.
+
+- Pages are rendered by PyMuPDF and displayed on a scrollable canvas
+- **Prev / Next** buttons navigate between pages; the current page and total are shown between them
+- Scroll with the mouse wheel or the scrollbar
+- This tab is the default landing screen when the app launches
+
+---
 
 ### Bom Filler
 
@@ -262,11 +279,73 @@ The macro updates `DrawnBy`, `DwgDrawnBy`, drawing properties, and exports flat-
 
 ---
 
+### SW Batch PDF Export
+
+Step-by-step guide for using **SolidWorks Task Scheduler** to batch-export drawings as PDFs without opening SolidWorks manually.
+
+#### Steps
+
+1. Open **SolidWorks Task Scheduler** (Start → SolidWorks Tools → Task Scheduler)
+2. Click **Export Files** in the left panel
+3. Set **Output Format** to `Adobe Portable Document Format (*.pdf)`
+4. Click **Add Files** or **Add Folder** and select the drawings to export
+5. Set the **Output Folder** destination
+6. Set **Schedule** to *Run Now* or a future time
+7. Click **Add Task**, then **Run**
+
+#### Tips
+
+- SolidWorks does not need to be open — Task Scheduler runs independently
+- Use **Add Folder** to queue an entire folder of drawings at once
+- Enable **Include sub-folders** to recurse into sub-directories
+- Paper size and orientation come from the drawing sheet format, not from Task Scheduler
+
+---
+
+### File Logger
+
+Launches the **Parts Tracker** — a standalone SolidWorks part number tracking tool that monitors job folders and logs file activity.
+
+The panel provides a **Launch Parts Tracker** button and shows whether the tracker process is currently running.
+
+---
+
+### Training Materials
+
+Provides quick access to FoxFab engineering reference documents.
+
+#### Engineering Design Package
+
+Prints all reference PDFs in `tools/EngineeringDesignPackage/` double-sided to the preferred printer in a single batch:
+
+| Document |
+|----------|
+| CU cut tool.pdf |
+| FLEXI HOW TO CONNECT.pdf |
+| Flexibar Advanced Technical Characteristics.pdf |
+| Minimum Bending Space.pdf |
+| Punch tooling list.pdf |
+| UL891 Annex G.pdf |
+| Wire Connections - Internal.pdf |
+
+- Click **Print All — Double-Sided** to send all documents
+- A status label shows which file is printing and the current count
+- The button is disabled while the job runs and re-enables when done
+- Paper size is not forced — the printer uses the size embedded in each document
+
+#### Design Reference
+
+**Open FoxFab Design Tips** opens `tools/FoxFab_Design_Tips.docx` in the default application (Microsoft Word).
+
+---
+
 ## App Features
 
 | Feature | Detail |
 |---|---|
 | Sidebar navigation | Switch between tools instantly — no re-launch |
+| Default landing tab | Opens on **How to Use** so new users are immediately oriented |
+| Embedded PDF viewer | Renders the user manual inside the app via PyMuPDF — no external viewer |
 | Per-tool terminal | Colour-coded log levels: `[INFO]`, `[OK]`, `[WARN]`, `[ERROR]` |
 | Progress bar | Per-tool, updates during each pass |
 | Stop button | Hard stop via `threading.Event` checked between iterations |
@@ -274,6 +353,7 @@ The macro updates `DrawnBy`, `DwgDrawnBy`, drawing properties, and exports flat-
 | Simulation Mode | PDFs saved locally instead of printed |
 | Preview FWO | Fills and opens FWO PDF without a print run |
 | Preview BOM | Runs CNC marking, exports BOM to PDF, opens it |
+| Batch reference print | Training Materials prints the full design package double-sided in one click |
 | Master log | `logs/ETH_master_YYYY-MM-DD.log` appended after each run |
 | Temp folder cleanup | Deferred to next run so spooler finishes safely |
 
@@ -336,18 +416,27 @@ The script runs four steps:
 Engineering Tool Hub\
 ├── app.py                              # Combined application (single file)
 ├── build.bat                           # PyInstaller build script
+├── Engineering_Tool_Hub.pdf            # User manual (displayed in How to Use tab)
 ├── .gitignore
 ├── tools\
-│   ├── BomCheck\
-│   │   ├── main.py                     # Original standalone BOM script
-│   │   ├── build.bat                   # Standalone BomCheck build (legacy)
-│   │   ├── BomCheck.spec               # PyInstaller spec (legacy)
-│   │   └── es.exe                      # Everything CLI binary
+│   ├── BomFiller\
+│   │   └── main.py                     # Original standalone BOM script
 │   ├── DocPrepPrint\
 │   │   ├── DocPrepPrint.py             # Original print script (reference)
 │   │   └── DocPrepPrint_Test(...).py
-│   └── SolidworksBatchUpdate\
-│       └── SoldworksBatchUpdate.bas    # VB macro (run inside SolidWorks)
+│   ├── SolidworksBatchUpdate\
+│   │   └── SoldworksBatchUpdate.swp    # VB macro (run inside SolidWorks)
+│   ├── File Logger\
+│   │   └── parts_tracker.py            # Parts Tracker standalone app
+│   ├── EngineeringDesignPackage\       # Reference PDFs printed by Training Materials tab
+│   │   ├── CU cut tool.pdf
+│   │   ├── FLEXI HOW TO CONNECT.pdf
+│   │   ├── Flexibar Advanced Technical Characteristics.pdf
+│   │   ├── Minimum Bending Space.pdf
+│   │   ├── Punch tooling list.pdf
+│   │   ├── UL891 Annex G.pdf
+│   │   └── Wire Connections - Internal.pdf
+│   └── FoxFab_Design_Tips.docx         # Design guidelines (opened by Training Materials tab)
 └── logs\                               # Created at runtime — excluded from git
     └── ETH_master_YYYY-MM-DD.log
 ```
