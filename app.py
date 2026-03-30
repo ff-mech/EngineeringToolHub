@@ -1582,8 +1582,13 @@ class App:
                 self._fl_status_var.set(f"Script not found: {script_path}")
                 return
             try:
+                python_exe = (
+                    sys.executable
+                    if not getattr(sys, "frozen", False)
+                    else "python"
+                )
                 self._fl_proc = subprocess.Popen(
-                    [sys.executable, script_path],
+                    [python_exe, script_path],
                     cwd=os.path.dirname(script_path),
                     creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
                 )
