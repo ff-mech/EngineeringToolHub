@@ -1552,7 +1552,7 @@ class App:
             "Track SolidWorks part files across job folders — find gaps, orphans, and next available numbers.")
 
         script_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
+            str(exe_dir()),
             "tools", "File Logger", "parts_tracker.py")
 
         # ── Launch card ───────────────────────────────────────────────
@@ -1645,7 +1645,7 @@ class App:
             "Run the SolidWorks macro directly to update custom properties and export DXFs.")
 
         macro_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)),
+            str(exe_dir()),
             "tools", "SolidworksBatchUpdate", "SoldworksBatchUpdate.swp")
 
         # ── How to Run card ───────────────────────────────────────

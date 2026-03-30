@@ -108,37 +108,12 @@ if exist "Engineering_Tool_Hub.pdf" (
     echo  [WARN]  Engineering_Tool_Hub.pdf not found - How to Use tab will show an error.
 )
 
-:: Engineering Design Package PDFs (Training Materials tab)
-if exist "tools\EngineeringDesignPackage" (
-    xcopy /s /i /y "tools\EngineeringDesignPackage" "dist\Engineering Tool Hub\tools\EngineeringDesignPackage\" >nul 2>&1
-    echo         Copied tools\EngineeringDesignPackage\
+:: All tools (copies every subfolder and file under tools\ in one pass)
+if exist "tools" (
+    xcopy /s /i /y "tools" "dist\Engineering Tool Hub\tools\" >nul 2>&1
+    echo         Copied tools\
 ) else (
-    echo  [WARN]  tools\EngineeringDesignPackage not found - Training Materials print will show an error.
-)
-
-:: FoxFab Design Tips (Training Materials tab)
-if exist "tools\FoxFab_Design_Tips.docx" (
-    if not exist "dist\Engineering Tool Hub\tools" mkdir "dist\Engineering Tool Hub\tools"
-    copy /y "tools\FoxFab_Design_Tips.docx" "dist\Engineering Tool Hub\tools\FoxFab_Design_Tips.docx" >nul 2>&1
-    echo         Copied tools\FoxFab_Design_Tips.docx
-) else (
-    echo  [WARN]  tools\FoxFab_Design_Tips.docx not found - Training Materials button will show an error.
-)
-
-:: File Logger script (File Logger tab)
-if exist "tools\File Logger" (
-    xcopy /s /i /y "tools\File Logger" "dist\Engineering Tool Hub\tools\File Logger\" >nul 2>&1
-    echo         Copied tools\File Logger\
-) else (
-    echo  [WARN]  tools\File Logger not found - File Logger tab will show an error.
-)
-
-:: SolidWorks macro (SW Batch Update tab - Open Folder button)
-if exist "tools\SolidworksBatchUpdate" (
-    xcopy /s /i /y "tools\SolidworksBatchUpdate" "dist\Engineering Tool Hub\tools\SolidworksBatchUpdate\" >nul 2>&1
-    echo         Copied tools\SolidworksBatchUpdate\
-) else (
-    echo  [WARN]  tools\SolidworksBatchUpdate not found - SW Batch Update folder link will not work.
+    echo  [WARN]  tools\ folder not found - tool tabs may not work correctly.
 )
 
 echo         Done.
