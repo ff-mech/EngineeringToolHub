@@ -393,17 +393,26 @@ Double-click **`build.bat`** or run it from a terminal at the repo root:
 build.bat
 ```
 
-The script runs four steps:
+The script runs five steps:
 
 ```
-[1/4]  Install / upgrade Python dependencies (pip)
-[2/4]  Clean dist\ and build\ from any previous run
-[3/4]  Run PyInstaller --onedir --windowed
-         Bundles: app.py, es.exe, all hidden imports
-[4/4]  Copy es.exe into dist\Engineering Tool Hub\ (fallback copy)
+[1/5]  Install / upgrade Python dependencies (pip)
+[2/5]  Clean dist\ and build\ from any previous run
+[3/5]  Run PyInstaller --onedir --windowed
+         Bundles: app.py, all hidden imports
+[4/5]  Copy all companion files next to the .exe:
+         es.exe                          (Bom Filler stock search)
+         Engineering_Tool_Hub.pdf        (How to Use tab)
+         tools\EngineeringDesignPackage\ (Training Materials print)
+         tools\FoxFab_Design_Tips.docx   (Training Materials open)
+         tools\File Logger\              (File Logger tab)
+         tools\SolidworksBatchUpdate\    (SW Batch Update Open Folder)
+[5/5]  Build complete
 ```
 
 **Output:** `dist\Engineering Tool Hub\Engineering Tool Hub.exe`
+
+The `dist\Engineering Tool Hub\` folder is fully self-contained after a build — all tools, PDFs, and reference documents are included. No manual copying needed.
 
 > **To distribute:** copy the **entire** `dist\Engineering Tool Hub\` folder.
 > Do **not** move just the `.exe` — it requires the `_internal\` folder alongside it.
