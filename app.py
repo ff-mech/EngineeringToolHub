@@ -115,6 +115,7 @@ ACROBAT_SEARCH_PATHS = [
 ]
 BOM_SHEET_NAME     = "FFMPL"
 EXCEL_EXTENSIONS   = {".xlsx", ".xls", ".xlsm"}
+FLEXIBAR_PREFIXES  = ("245-",)   # part prefixes that never have DXF files
 PDF_EXTENSIONS     = {".pdf", ".PDF"}
 
 # ── FWO auto-fill field positions (PDF points; Y increases downward, origin top-left)
@@ -781,8 +782,10 @@ class App:
 
             for i, pn in enumerate(part_numbers):
                 check_stop()
+                row = DATA_START + i
                 if pn is None or not str(pn).strip():
                     stock_flags.append(False)
+                    emit(f"  Row {row}  (blank — skipped)", "info")
                     continue
                 pn_s = str(pn).strip()
                 done += 1
@@ -790,7 +793,6 @@ class App:
                        ("bom", done, total, f"Pass 1 — {done}/{total}")))
 
                 is_stock = _bom_check_stock(pn_s)
-                row = DATA_START + i
                 if is_stock:
                     ws.range(f"B{row}").value = "X"
                     ws.range(f"G{row}").value = "S"
@@ -808,45 +810,61 @@ class App:
 
             tgt_path = Path(target)
             pdf_cp = pdf_ex = pdf_nf = 0
-            dxf_cp = dxf_ex = dxf_nf = 0
+            dxf_cp = dxf_ex = dxf_nf = dxf_na = 0
             ns_done = 0
             ns_total = sum(1 for i, p in enumerate(part_numbers)
                            if p and str(p).strip()
                            and i < len(stock_flags) and not stock_flags[i])
 
+            # Build part-number → row map for cross-marking combined-part files
+            pn_to_row = {
+                str(p).strip().upper(): DATA_START + idx
+                for idx, p in enumerate(part_numbers)
+                if p and str(p).strip()
+            }
+
             for i, pn in enumerate(part_numbers):
                 check_stop()
+                row = DATA_START + i
                 if pn is None or not str(pn).strip():
+                    emit(f"  Row {row}  (blank — skipped)", "info")
                     continue
                 if i < len(stock_flags) and stock_flags[i]:
                     continue
                 pn_s = str(pn).strip()
+                is_flexibar = pn_s.startswith(FLEXIBAR_PREFIXES)
                 ns_done += 1
                 q.put(("__progress__",
                        ("bom", ns_done, max(ns_total, 1),
                         f"Pass 2 — {ns_done}/{ns_total}")))
 
                 rev = _bom_find_revision(pn_s)
-                row = DATA_START + i
 
-                pdf_r = _bom_find_copy(pn_s, rev, tgt_path, "pdf")
-                dxf_r = _bom_find_copy(pn_s, rev, tgt_path, "dxf")
+                pdf_r, pdf_covered = _bom_find_copy(pn_s, rev, tgt_path, "pdf")
+
+                if is_flexibar:
+                    dxf_r, dxf_covered = False, []
+                    dlbl = "N/A (flexibar)"
+                    dxf_na += 1
+                else:
+                    dxf_r, dxf_covered = _bom_find_copy(pn_s, rev, tgt_path, "dxf")
+                    dlbl = ("copied" if dxf_r is True
+                            else "exists" if dxf_r is None else "not found")
 
                 # concise status labels
                 plbl = ("copied" if pdf_r is True
                         else "exists" if pdf_r is None else "not found")
-                dlbl = ("copied" if dxf_r is True
-                        else "exists" if dxf_r is None else "not found")
 
                 if pdf_r is True:   pdf_cp += 1
                 elif pdf_r is None: pdf_ex += 1
                 else:               pdf_nf += 1
 
-                if dxf_r is True:   dxf_cp += 1
-                elif dxf_r is None: dxf_ex += 1
-                else:               dxf_nf += 1
+                if not is_flexibar:
+                    if dxf_r is True:   dxf_cp += 1
+                    elif dxf_r is None: dxf_ex += 1
+                    else:               dxf_nf += 1
 
-                has_issue = pdf_r is False or dxf_r is False
+                has_issue = pdf_r is False or (not is_flexibar and dxf_r is False)
                 tag = "warn" if has_issue else "ok"
                 rv  = f" [{rev}]" if rev else ""
                 emit(f"  {pn_s:<28}{rv:<6}  PDF: {plbl:<12}  DXF: {dlbl}", tag)
@@ -854,10 +872,27 @@ class App:
                 if pdf_r is not False or dxf_r is not False:
                     ws.range(f"G{row}").value = "X"
 
+                if is_flexibar and pdf_r is not False:
+                    ws.range(f"H{row}").value = "N/A"
+
+                # Cross-mark other BOM rows covered by combined-part files
+                for covered_list in (pdf_covered, dxf_covered):
+                    for other_pn in covered_list:
+                        if other_pn.upper() == pn_s.upper():
+                            continue
+                        if other_pn.upper() in pn_to_row:
+                            other_row = pn_to_row[other_pn.upper()]
+                            ws.range(f"G{other_row}").value = "X"
+                            emit(f"    Combined: also marked {other_pn} (row {other_row})", "info")
+                        else:
+                            emit(f"    [WARN] Combined file covers {other_pn} — not in BOM", "warn")
+
             emit(f"  PDFs  copied {pdf_cp}  existed {pdf_ex}  not found {pdf_nf}",
                  "info")
-            emit(f"  DXFs  copied {dxf_cp}  existed {dxf_ex}  not found {dxf_nf}",
-                 "info")
+            dxf_line = f"  DXFs  copied {dxf_cp}  existed {dxf_ex}  not found {dxf_nf}"
+            if dxf_na:
+                dxf_line += f"  N/A (flexibar) {dxf_na}"
+            emit(dxf_line, "info")
 
             changes = stock_found + pdf_cp + pdf_ex + dxf_cp + dxf_ex
             if changes > 0:
@@ -2086,12 +2121,61 @@ def _run_es(args: list[str]) -> str:
         return ""
 
 
+def _decode_combined_stem(base_stem: str) -> list[str]:
+    """
+    Decode a combined-part file stem into all covered part numbers.
+    E.g. '240-90123_124_125' -> ['240-90123', '240-90124', '240-90125']
+    Returns [base_stem] unchanged if it doesn't match the combined-file pattern.
+    """
+    parts = base_stem.split('_')
+    if len(parts) < 2:
+        return [base_stem]
+    base = parts[0]
+    suffixes = parts[1:]
+    if not all(s.isdigit() for s in suffixes):
+        return [base_stem]
+    covered = [base]
+    current = base
+    for suffix in suffixes:
+        n = len(suffix)
+        if len(current) < n:
+            return [base_stem]
+        current = current[:-n] + suffix
+        covered.append(current)
+    return covered
+
+
+def _split_stem_rev(stem: str) -> tuple[str, str]:
+    """
+    Split a file stem into (base_without_revision, revision_or_empty).
+    Handles ' rB', '-rB', '_rB' separators.
+    E.g. '240-90123_124 rB' -> ('240-90123_124', 'rB')
+    """
+    m = re.search(r'[-_\s]r([A-Za-z])$', stem, re.IGNORECASE)
+    if m:
+        return stem[:m.start()].rstrip(), f"r{m.group(1).upper()}"
+    return stem, ""
+
+
 def _bom_check_stock(pn: str) -> bool:
+    """
+    Check if a part exists in the stock folder.
+    Also handles config-variant parts (e.g. 250-30834_001): strips the _###
+    suffix and retries with the base number so the whole family matches.
+    """
     out = _run_es(["-path", STOCK_PARTS_FOLDER, pn])
-    return bool([l for l in out.splitlines() if l.strip()])
+    if any(l.strip() for l in out.splitlines()):
+        return True
+    base = re.sub(r'_\d+$', '', pn)
+    if base != pn:
+        out = _run_es(["-path", STOCK_PARTS_FOLDER, base])
+        if any(l.strip() for l in out.splitlines()):
+            return True
+    return False
 
 
 def _bom_find_revision(pn: str) -> str:
+    """Find the highest revision letter for a part. Handles combined-part stems."""
     out = _run_es([pn])
     highest = ""
     for line in out.splitlines():
@@ -2099,6 +2183,8 @@ def _bom_find_revision(pn: str) -> str:
         if not stem.upper().startswith(pn.upper()):
             continue
         suffix = stem[len(pn):].strip()
+        # Strip combined-part segments (e.g. _124_125) before checking revision
+        suffix = re.sub(r'^(_\d+)+', '', suffix).strip()
         m = re.match(r'^[-_\s]?r([A-Za-z])$', suffix)
         if m:
             r = m.group(1).upper()
@@ -2107,23 +2193,54 @@ def _bom_find_revision(pn: str) -> str:
     return f"r{highest}" if highest else ""
 
 
-def _bom_find_copy(pn: str, rev: str, target: Path, ext: str):
-    out = _run_es([f"ext:{ext}", pn])
-    if not out:
-        return False
-    expected = ({f"{pn} {rev}".upper(), f"{pn}-{rev}".upper()}
-                if rev else {pn.upper()})
+def _bom_find_copy(pn: str, rev: str, target: Path, ext: str) -> tuple:
+    """
+    Search for a PDF/DXF matching pn (with optional revision) and copy it.
+    Also detects combined-part filenames (e.g. 240-90123_124.pdf).
+
+    Returns (result, covered_parts):
+      result        = True (copied), None (already exists), False (not found)
+      covered_parts = list of part numbers covered by the matched file
+    """
     ext_up = f".{ext.upper()}"
-    for line in out.splitlines():
-        p = Path(line.strip())
-        if p.stem.upper() in expected and p.suffix.upper() == ext_up:
-            if p.exists():
-                dest = target / p.name
-                if dest.exists():
-                    return None
-                shutil.copy2(str(p), str(dest))
-                return True
-    return False
+
+    # Primary search — also finds combined files where pn is the base part
+    candidates: set[str] = set()
+    out = _run_es([f"ext:{ext}", pn])
+    if out:
+        candidates.update(l.strip() for l in out.splitlines() if l.strip())
+
+    # Broader search: pn may appear as a DERIVED part in a combined file
+    # (e.g. 240-90124 won't directly match 240-90123_124.pdf)
+    if len(pn) > 5:
+        for drop in (2, 3):
+            prefix = pn[:-drop]
+            extra = _run_es([f"ext:{ext}", prefix])
+            if extra:
+                candidates.update(l.strip() for l in extra.splitlines() if l.strip())
+
+    if not candidates:
+        return False, []
+
+    for line in candidates:
+        p = Path(line)
+        if p.suffix.upper() != ext_up:
+            continue
+        clean_stem, file_rev = _split_stem_rev(p.stem)
+        covered_parts = _decode_combined_stem(clean_stem)
+        if pn.upper() not in [c.upper() for c in covered_parts]:
+            continue
+        if rev and file_rev and file_rev.upper() != rev.upper():
+            continue
+        if not p.exists():
+            continue
+        dest = target / p.name
+        if dest.exists():
+            return None, covered_parts
+        shutil.copy2(str(p), str(dest))
+        return True, covered_parts
+
+    return False, []
 
 
 # ═════════════════════════════════════════════════════════════════════
