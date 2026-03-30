@@ -9,7 +9,7 @@ FoxFab internal engineering utilities combined into a single Windows desktop app
 - [Overview](#overview)
 - [Quick Start](#quick-start)
 - [Tools](#tools)
-  - [BOM Check](#bom-check)
+  - [Bom Filler](#bom-filler)
   - [Doc Prep & Print](#doc-prep--print)
   - [SW Batch Update](#sw-batch-update)
 - [App Features](#app-features)
@@ -29,7 +29,7 @@ Engineering Tool Hub wraps three manufacturing workflow tools into one professio
 │  Engineering Tool Hub                                   │
 │  ┌──────────────┬────────────────────────────────────┐  │
 │  │              │                                    │  │
-│  │  BOM Check   │   [ Tool Panel ]                   │  │
+│  │  Bom Filler   │   [ Tool Panel ]                   │  │
 │  │              │   Config  ─────────────────────    │  │
 │  │  Doc Prep    │   ▶ Run   ■ Stop   [======   ]     │  │
 │  │  & Print     │                                    │  │
@@ -59,7 +59,7 @@ Each tool runs in a background thread — the UI stays responsive throughout. Ou
 
 ## Tools
 
-### BOM Check
+### Bom Filler
 
 Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) against the stock parts library and copies the correct-revision files for non-stock parts.
 
@@ -284,14 +284,14 @@ The macro updates `DrawnBy`, `DwgDrawnBy`, drawing properties, and exports flat-
 | Dependency | Purpose |
 |---|---|
 | Python 3.10+ | Runtime |
-| `xlwings` | Excel COM automation (BOM Check, CNC marking, PDF export) |
+| `xlwings` | Excel COM automation (Bom Filler, CNC marking, PDF export) |
 | `pypdf` | PDF merging |
 | `pymupdf` | FWO text overlay + GALV drawing number extraction |
 | `openpyxl` | PRF data reading (no COM required) |
 | `pywin32` | Windows COM, DEVMODE duplex, print API |
 | `pyinstaller` | Building the `.exe` |
-| `es.exe` | Everything CLI — fast filename search for BOM Check |
-| Microsoft Excel | BOM Check, CNC column marking, BOM/PRF export |
+| `es.exe` | Everything CLI — fast filename search for Bom Filler |
+| Microsoft Excel | Bom Filler, CNC column marking, BOM/PRF export |
 | Adobe Acrobat 2017+ | Single-instance COM printing with per-document duplex |
 
 Install Python packages:
@@ -387,7 +387,7 @@ Use **Preview FWO** to verify changes without a full print run.
 
 ### Notes
 
-- BOM Check and CNC marking both open the BOM via xlwings COM — close Excel first.
+- Bom Filler and CNC marking both open the BOM via xlwings COM — close Excel first.
 - Acrobat is located automatically from `ACROBAT_SEARCH_PATHS`. Add a custom path there if installed in a non-standard location.
 - The `logs\` folder is excluded from git. Log files are local only.
 - The preferred printer name is `PREFERRED_PRINTER` in `app.py` — update if the printer is renamed.

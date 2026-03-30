@@ -43,12 +43,12 @@ echo         Done.
 
 :: Locate es.exe to bundle it
 set "ES_EXE="
-if exist "tools\BomCheck\es.exe"  set "ES_EXE=tools\BomCheck\es.exe"
+if exist "tools\BomFiller\es.exe"  set "ES_EXE=tools\BomFiller\es.exe"
 if exist "es.exe"                  set "ES_EXE=es.exe"
 
 if "!ES_EXE!"=="" (
-    echo  [WARN]  es.exe not found — BOM Check stock search will rely on system PATH.
-    echo          Expected location: tools\BomCheck\es.exe
+    echo  [WARN]  es.exe not found — Bom Filler stock search will rely on system PATH.
+    echo          Expected location: tools\BomFiller\es.exe
     set "ADD_ES="
 ) else (
     echo  [INFO]  Bundling es.exe from: !ES_EXE!

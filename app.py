@@ -3,7 +3,7 @@ Engineering Tool Hub  —  app.py
 FoxFab internal engineering utilities, combined into one application.
 
 Tools:
-  • BOM Check          – marks stock parts, copies non-stock PDFs/DXFs
+  • Bom Filler         – marks stock parts, copies non-stock PDFs/DXFs
   • Doc Prep & Print   – builds and prints (or simulates) a manufacturing packet
   • SW Batch Update    – updates SolidWorks custom properties and exports DXFs
 """
@@ -186,7 +186,7 @@ def _find_es_exe() -> str:
         if os.path.isfile(bundled):
             return bundled
     for candidate in [exe_dir() / "es.exe",
-                      exe_dir() / "tools" / "BomCheck" / "es.exe"]:
+                      exe_dir() / "tools" / "BomFiller" / "es.exe"]:
         if candidate.exists():
             return str(candidate)
     return "es.exe"
@@ -254,7 +254,7 @@ def check_stop():
 
 class App:
     TOOLS = [
-        ("bom", "BOM Check"),
+        ("bom", "Bom Filler"),
         ("dpp", "Doc Prep & Print"),
         ("sw",  "SW Batch Update"),
     ]
@@ -644,13 +644,13 @@ class App:
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  BOM CHECK PANEL
+#  BOM FILLER PANEL
 # ═════════════════════════════════════════════════════════════════════
 
     def _build_bom_panel(self, parent):
         self._section_header(
             parent,
-            "BOM Check",
+            "Bom Filler",
             "Mark stock parts in the FFMPL sheet, then copy non-stock PDFs and DXFs to the target folder.")
 
         card = self._card(parent, "Configuration")
@@ -671,7 +671,7 @@ class App:
                  bg=C_PANEL, fg=C_WARN, font=F_SMALL).pack(anchor="w")
 
         self._action_bar(parent, "bom", self._run_bom, self._on_stop,
-                         run_label="  Run BOM Check  ")
+                         run_label="  Run Bom Filler  ")
 
         self._terminal(parent, "bom", rows=15)
 
@@ -694,7 +694,7 @@ class App:
 
         confirmed = messagebox.askyesno(
             APP_TITLE,
-            "BOM Check requires the workbook to be CLOSED in Excel.\n\n"
+            "Bom Filler requires the workbook to be CLOSED in Excel.\n\n"
             "Have you closed the workbook and are ready to proceed?",
         )
         if not confirmed:
@@ -703,7 +703,7 @@ class App:
         self._active_key = "bom"
         _stop_event.clear()
         self._set_running("bom", True)
-        self._set_status("BOM Check — running...")
+        self._set_status("Bom Filler — running...")
 
         t = threading.Thread(
             target=self._bom_worker, args=(wb, tgt), daemon=True)
@@ -867,7 +867,7 @@ class App:
             for ln in traceback.format_exc().splitlines():
                 emit(ln, "error")
         finally:
-            q.put(("__done__", ("bom", success, "BOM Check", log_lines)))
+            q.put(("__done__", ("bom", success, "Bom Filler", log_lines)))
 
     # ── CNC Column Marker ─────────────────────────────────────────────
 
@@ -1735,7 +1735,7 @@ class App:
 
 
 # ═════════════════════════════════════════════════════════════════════
-#  BOM CHECK  —  module-level helpers
+#  BOM FILLER  —  module-level helpers
 # ═════════════════════════════════════════════════════════════════════
 
 def _run_es(args: list[str]) -> str:

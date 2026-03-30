@@ -19,7 +19,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Splash screen on startup shown before heavy imports to signal the app is loading
 - Lazy panel building — only the active tool panel is constructed at launch
 
-**BOM Check**
+**Bom Filler**
 - Two-pass BOM processor: stock parts check (Pass 1) then non-stock PDF/DXF copy (Pass 2)
 - Everything CLI (`es.exe`) integration for fast indexed file search
 - Revision detection — picks highest `rA/rB/rC…` revision automatically
