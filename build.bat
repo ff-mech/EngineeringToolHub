@@ -91,13 +91,60 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Copy es.exe into dist folder (next to the exe) as a fallback
+:: ── Copy all companion files next to the .exe ───────────────────────
+echo  [4/5]  Copying companion files...
+
+:: es.exe (Bom Filler stock search)
 if not "!ES_EXE!"=="" (
     copy /y "!ES_EXE!" "dist\Engineering Tool Hub\es.exe" >nul 2>&1
+    echo         Copied es.exe
 )
 
+:: User manual (How to Use tab)
+if exist "Engineering_Tool_Hub.pdf" (
+    copy /y "Engineering_Tool_Hub.pdf" "dist\Engineering Tool Hub\Engineering_Tool_Hub.pdf" >nul 2>&1
+    echo         Copied Engineering_Tool_Hub.pdf
+) else (
+    echo  [WARN]  Engineering_Tool_Hub.pdf not found - How to Use tab will show an error.
+)
+
+:: Engineering Design Package PDFs (Training Materials tab)
+if exist "tools\EngineeringDesignPackage" (
+    xcopy /s /i /y "tools\EngineeringDesignPackage" "dist\Engineering Tool Hub\tools\EngineeringDesignPackage\" >nul 2>&1
+    echo         Copied tools\EngineeringDesignPackage\
+) else (
+    echo  [WARN]  tools\EngineeringDesignPackage not found - Training Materials print will show an error.
+)
+
+:: FoxFab Design Tips (Training Materials tab)
+if exist "tools\FoxFab_Design_Tips.docx" (
+    if not exist "dist\Engineering Tool Hub\tools" mkdir "dist\Engineering Tool Hub\tools"
+    copy /y "tools\FoxFab_Design_Tips.docx" "dist\Engineering Tool Hub\tools\FoxFab_Design_Tips.docx" >nul 2>&1
+    echo         Copied tools\FoxFab_Design_Tips.docx
+) else (
+    echo  [WARN]  tools\FoxFab_Design_Tips.docx not found - Training Materials button will show an error.
+)
+
+:: File Logger script (File Logger tab)
+if exist "tools\File Logger" (
+    xcopy /s /i /y "tools\File Logger" "dist\Engineering Tool Hub\tools\File Logger\" >nul 2>&1
+    echo         Copied tools\File Logger\
+) else (
+    echo  [WARN]  tools\File Logger not found - File Logger tab will show an error.
+)
+
+:: SolidWorks macro (SW Batch Update tab - Open Folder button)
+if exist "tools\SolidworksBatchUpdate" (
+    xcopy /s /i /y "tools\SolidworksBatchUpdate" "dist\Engineering Tool Hub\tools\SolidworksBatchUpdate\" >nul 2>&1
+    echo         Copied tools\SolidworksBatchUpdate\
+) else (
+    echo  [WARN]  tools\SolidworksBatchUpdate not found - SW Batch Update folder link will not work.
+)
+
+echo         Done.
+
 echo.
-echo  [4/4]  Build complete.
+echo  [5/5]  Build complete.
 echo.
 echo  ============================================================
 echo   Output:  dist\Engineering Tool Hub\Engineering Tool Hub.exe
