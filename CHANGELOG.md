@@ -5,6 +5,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.0] — 2026-03-31
+
+### Added
+
+**Bom Filler**
+- **Auto-populate target folder** — selecting a BOM from a `204 BOM\` directory auto-fills the target with the sibling `202 PDFs_Flats` folder
+- **Punch Program exclusion** — PDFs/DXFs under `PUNCH PROGRAMS` paths are now skipped; the tool grabs the clean copy from the job's `PDF & Flat` folder instead
+- **es.exe result caching** — search results are cached per run to avoid redundant subprocess calls for repeated part number lookups
+- **Stock index pre-fetch** — entire stock folder indexed in a single `es.exe` call at run start, making Pass 1 significantly faster
+- **Flexibar support** — 245-prefix flexibar parts skip DXF copy and mark column H as N/A
+- **Combined-part filename detection** — recognises filenames like `240-90123_124.pdf`, cross-marks all covered BOM rows automatically
+- **Config-variant stock check** — strips `_###` suffix and retries with the base part number so config variants match their stock family
+
+**File Logger**
+- Added File Logger (PartsTracker) as a git submodule under `tools/File Logger`
+
+**Build**
+- `Engineering Tool Hub.spec` — PyInstaller build spec added for reproducible builds
+- `build.bat` now copies all companion assets into the dist folder automatically (PDF manual, training materials, File Logger, SW Batch Update scripts) making the dist folder fully self-contained
+
+### Fixed
+
+- **Hidden console windows** — `es.exe` now runs with `CREATE_NO_WINDOW` to prevent flash of console windows during search
+- **Revision detection** — combined-part files are now skipped during revision detection so their revision doesn't incorrectly override the individual part's revision
+- **File Logger launch** — use system Python (`python.exe` from PATH) instead of `sys.executable` when running as a frozen PyInstaller exe, preventing the hub from relaunching itself
+- **Tool path resolution** — use `exe_dir()` instead of `__file__` for File Logger and SW Batch Update script paths so they resolve correctly in built exe
+- **Build script** — replaced per-folder xcopy calls with a single `tools\` copy so all subfolders are included automatically
+
+### Changed
+
+- **Build process** updated to 5 steps; README Build section updated to reflect the new process
+
+---
+
 ## [1.1.0] — 2026-03-30
 
 ### Added
