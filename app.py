@@ -676,6 +676,19 @@ class App:
                                    ("All files", "*.*")])
         self._field_row(card, "Target Folder", self._bom_target, mode="dir")
 
+        # Auto-populate target folder from BOM path:
+        # .../200 Mech/204 BOM/file.xlsx → .../200 Mech/202 PDFs_Flats
+        def _on_bom_wb_change(*_):
+            wb_path = self._bom_wb.get().strip()
+            if not wb_path:
+                return
+            bom_dir = Path(wb_path).parent
+            pdfs_flats = bom_dir.parent / "202 PDFs_Flats"
+            if pdfs_flats.is_dir():
+                self._bom_target.set(str(pdfs_flats))
+
+        self._bom_wb.trace_add("write", _on_bom_wb_change)
+
         note_row = tk.Frame(card, bg=C_PANEL)
         note_row.pack(fill="x", pady=(8, 0))
         tk.Label(note_row,
@@ -734,6 +747,11 @@ class App:
             q.put((tag, line))
 
         try:
+            # Clear es.exe result cache and stock index for this run
+            global _stock_stems
+            _es_cache.clear()
+            _stock_stems = None
+
             if xw is None:
                 raise RuntimeError(
                     "xlwings is not installed. Run:  pip install xlwings")
@@ -772,6 +790,11 @@ class App:
 
             total = sum(1 for p in part_numbers if p and str(p).strip())
             emit(f"Found {total} part numbers to process.", "info")
+
+            # ── Pre-fetch stock folder listing (1 es.exe call for all parts)
+            emit("Fetching stock parts index…", "info")
+            _bom_prefetch_stock()
+            emit(f"  Indexed {len(_stock_stems or [])} stock files.", "info")
 
             # ── PASS 1 ─────────────────────────────────────────────────
             emit("Pass 1  —  Stock Parts Check", "heading")
@@ -2112,13 +2135,24 @@ class App:
 #  BOM FILLER  —  module-level helpers
 # ═════════════════════════════════════════════════════════════════════
 
+_NO_WINDOW = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
+
+# Per-run cache for es.exe results — cleared at the start of each BOM run.
+_es_cache: dict[tuple, str] = {}
+
 def _run_es(args: list[str]) -> str:
+    key = tuple(args)
+    if key in _es_cache:
+        return _es_cache[key]
     try:
         r = subprocess.run([ES_EXE] + args,
-                           capture_output=True, text=True, timeout=10)
-        return r.stdout.strip()
+                           capture_output=True, text=True, timeout=10,
+                           creationflags=_NO_WINDOW)
+        result = r.stdout.strip()
     except Exception:
-        return ""
+        result = ""
+    _es_cache[key] = result
+    return result
 
 
 def _decode_combined_stem(base_stem: str) -> list[str]:
@@ -2157,12 +2191,37 @@ def _split_stem_rev(stem: str) -> tuple[str, str]:
     return stem, ""
 
 
+# Pre-fetched stock file names (stems, upper-cased) — populated once per run.
+_stock_stems: set[str] | None = None
+
+def _bom_prefetch_stock():
+    """Fetch all filenames in the stock folder in one es.exe call."""
+    global _stock_stems
+    out = _run_es(["-path", STOCK_PARTS_FOLDER])
+    _stock_stems = set()
+    for line in out.splitlines():
+        line = line.strip()
+        if line:
+            _stock_stems.add(Path(line).stem.upper())
+
 def _bom_check_stock(pn: str) -> bool:
     """
     Check if a part exists in the stock folder.
     Also handles config-variant parts (e.g. 250-30834_001): strips the _###
     suffix and retries with the base number so the whole family matches.
+    Uses pre-fetched stock listing when available for speed.
     """
+    if _stock_stems is not None:
+        pn_up = pn.upper()
+        if any(pn_up in stem for stem in _stock_stems):
+            return True
+        base = re.sub(r'_\d+$', '', pn)
+        if base != pn:
+            base_up = base.upper()
+            if any(base_up in stem for stem in _stock_stems):
+                return True
+        return False
+    # Fallback to per-part search if prefetch wasn't run
     out = _run_es(["-path", STOCK_PARTS_FOLDER, pn])
     if any(l.strip() for l in out.splitlines()):
         return True
@@ -2183,8 +2242,10 @@ def _bom_find_revision(pn: str) -> str:
         if not stem.upper().startswith(pn.upper()):
             continue
         suffix = stem[len(pn):].strip()
-        # Strip combined-part segments (e.g. _124_125) before checking revision
-        suffix = re.sub(r'^(_\d+)+', '', suffix).strip()
+        # Skip combined-part files — their revision belongs to the
+        # combined set, not to this individual part number.
+        if re.match(r'^(_\d+)+', suffix):
+            continue
         m = re.match(r'^[-_\s]?r([A-Za-z])$', suffix)
         if m:
             r = m.group(1).upper()
@@ -2225,6 +2286,8 @@ def _bom_find_copy(pn: str, rev: str, target: Path, ext: str) -> tuple:
     for line in candidates:
         p = Path(line)
         if p.suffix.upper() != ext_up:
+            continue
+        if "PUNCH PROGRAM" in str(p).upper():
             continue
         clean_stem, file_rev = _split_stem_rev(p.stem)
         covered_parts = _decode_combined_stem(clean_stem)

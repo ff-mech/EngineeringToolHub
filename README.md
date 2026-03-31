@@ -80,10 +80,24 @@ Opens the Engineering Tool Hub user manual (`Engineering_Tool_Hub.pdf`) directly
 
 Processes a FoxFab manufacturing BOM (`.xlsx` / `.xlsm`) against the stock parts library and copies the correct-revision files for non-stock parts.
 
+#### Key Behaviours
+
+- **Auto-populate target folder** — when a BOM file is selected from a `204 BOM\` directory, the target folder automatically fills in with the sibling `202 PDFs_Flats` folder if it exists.
+- **Punch Program exclusion** — PDFs and DXFs located under `PUNCH PROGRAMS` paths are automatically skipped. The tool grabs the clean copy from the job's `PDF & Flat` folder (e.g. `2 JOBS\<job>\200 Mech\PDF & Flat`) instead.
+- **es.exe result caching** — search results are cached per run so repeated lookups for the same part number don't spawn extra processes.
+- **Stock index pre-fetch** — the entire stock parts folder is indexed in a single `es.exe` call at the start of each run, making Pass 1 significantly faster.
+
 #### Workflow
 
 ```
-User selects BOM file and target folder
+User selects BOM file (target folder auto-populated)
+              │
+              ▼
+    ┌─────────────────────┐
+    │  PRE-FETCH          │
+    │  Stock Parts Index  │
+    └─────────────────────┘
+    Single es.exe call indexes all stock folder filenames
               │
               ▼
     ┌─────────────────────┐
@@ -91,7 +105,7 @@ User selects BOM file and target folder
     │  Stock Parts Check  │
     └─────────────────────┘
     For each part in column A:
-      └─ es.exe searches Stock Parts folder (Z:\...300 Stock Parts\...)
+      └─ check against pre-fetched stock index
             ├─ FOUND  → col B = X, col G = S, col H = S
             └─ not found → continue to Pass 2
               │
@@ -102,6 +116,7 @@ User selects BOM file and target folder
     └─────────────────────────┘
     For each non-stock part:
       └─ es.exe finds all filenames starting with that part number
+            └─ filter out PUNCH PROGRAM paths
             └─ extract revisions (rA, rB, rC …) → pick highest
                   ├─ copy <part> <rev>.pdf  → target folder
                   ├─ copy <part> <rev>.dxf  → target folder
