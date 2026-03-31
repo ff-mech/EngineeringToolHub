@@ -5,6 +5,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.2.1] — 2026-03-31
+
+### Added
+
+**Bom Filler**
+- **Per-file-type revision detection** — PDF and DXF revisions are now determined independently, so a rev-bumped PDF (e.g. `250-31025-rB.pdf`) no longer causes the unchanged DXF (`250-31025.dxf`) to be skipped
+- **Numeric sub-revision support (PDFs)** — revision suffixes like `rA1`, `rA2`, `rB12` are now recognised on PDF files; ordering is `rA < rA1 < rA2 < rB < rB1 …`
+- **Standalone PDF preference** — the tool now prefers copying a standalone PDF over a combined-part PDF; falls back to the combined file when no standalone exists
+- **Revision log detail** — log output always shows per-type revisions: `[PDF:rB DXF:–]`
+
+### Fixed
+
+- **Candidate sort order** — when multiple files match (e.g. both `250-31025.dxf` and `250-31025-rA.dxf`), the highest-revision file is now reliably selected instead of depending on arbitrary iteration order
+
+---
+
 ## [1.2.0] — 2026-03-31
 
 ### Added

@@ -43,7 +43,7 @@ def _make_splash() -> tuple["tk.Tk", "tk.Toplevel"]:
     tk.Label(sp, text="Engineering Tool Hub",
              bg="#1E2B40", fg="#FFFFFF",
              font=("Segoe UI", 14, "bold")).pack(pady=(26, 2))
-    tk.Label(sp, text="v1.1.0  —  FoxFab",
+    tk.Label(sp, text="v1.2.1  —  FoxFab",
              bg="#1E2B40", fg="#64748B",
              font=("Segoe UI", 9)).pack()
     tk.Label(sp, text="Starting up…",
@@ -861,16 +861,21 @@ class App:
                        ("bom", ns_done, max(ns_total, 1),
                         f"Pass 2 — {ns_done}/{ns_total}")))
 
-                rev = _bom_find_revision(pn_s)
+                pdf_rev = _bom_find_revision(pn_s, "pdf")
+                dxf_rev = _bom_find_revision(pn_s, "dxf") if not is_flexibar else ""
 
-                pdf_r, pdf_covered = _bom_find_copy(pn_s, rev, tgt_path, "pdf")
+                # Prefer standalone PDF; fall back to combined.
+                pdf_r, pdf_covered = _bom_find_copy(pn_s, pdf_rev, tgt_path, "pdf",
+                                                    standalone_only=True)
+                if pdf_r is False:
+                    pdf_r, pdf_covered = _bom_find_copy(pn_s, pdf_rev, tgt_path, "pdf")
 
                 if is_flexibar:
                     dxf_r, dxf_covered = False, []
                     dlbl = "N/A (flexibar)"
                     dxf_na += 1
                 else:
-                    dxf_r, dxf_covered = _bom_find_copy(pn_s, rev, tgt_path, "dxf")
+                    dxf_r, dxf_covered = _bom_find_copy(pn_s, dxf_rev, tgt_path, "dxf")
                     dlbl = ("copied" if dxf_r is True
                             else "exists" if dxf_r is None else "not found")
 
@@ -889,8 +894,8 @@ class App:
 
                 has_issue = pdf_r is False or (not is_flexibar and dxf_r is False)
                 tag = "warn" if has_issue else "ok"
-                rv  = f" [{rev}]" if rev else ""
-                emit(f"  {pn_s:<28}{rv:<6}  PDF: {plbl:<12}  DXF: {dlbl}", tag)
+                rv = f" [PDF:{pdf_rev or '–'} DXF:{dxf_rev or '–'}]"
+                emit(f"  {pn_s:<28}{rv:<20}  PDF: {plbl:<12}  DXF: {dlbl}", tag)
 
                 if pdf_r is not False or dxf_r is not False:
                     ws.range(f"G{row}").value = "X"
@@ -2179,16 +2184,32 @@ def _decode_combined_stem(base_stem: str) -> list[str]:
     return covered
 
 
-def _split_stem_rev(stem: str) -> tuple[str, str]:
+def _split_stem_rev(stem: str, allow_subrev: bool = False) -> tuple[str, str]:
     """
     Split a file stem into (base_without_revision, revision_or_empty).
     Handles ' rB', '-rB', '_rB' separators.
-    E.g. '240-90123_124 rB' -> ('240-90123_124', 'rB')
+    When *allow_subrev* is True, also captures numeric sub-revisions
+    like rA1, rA2, rB12.
+    E.g. '240-90123_124 rB'  -> ('240-90123_124', 'rB')
+         '250-31025-rA2'     -> ('250-31025', 'rA2')  (when allow_subrev=True)
     """
-    m = re.search(r'[-_\s]r([A-Za-z])$', stem, re.IGNORECASE)
+    pat = r'[-_\s]r([A-Za-z]\d*)$' if allow_subrev else r'[-_\s]r([A-Za-z])$'
+    m = re.search(pat, stem, re.IGNORECASE)
     if m:
-        return stem[:m.start()].rstrip(), f"r{m.group(1).upper()}"
+        raw = m.group(1)
+        normalised = raw[0].upper() + raw[1:]
+        return stem[:m.start()].rstrip(), f"r{normalised}"
     return stem, ""
+
+
+def _rev_sort_key(rev: str) -> tuple[str, int]:
+    """Return a sortable key for revision strings like 'rA', 'rA1', 'rB12'.
+    No-rev ('') sorts lowest."""
+    if not rev:
+        return ("", -1)
+    letter = rev[1].upper()
+    num = int(rev[2:]) if len(rev) > 2 else -1
+    return (letter, num)
 
 
 # Pre-fetched stock file names (stems, upper-cased) — populated once per run.
@@ -2233,12 +2254,20 @@ def _bom_check_stock(pn: str) -> bool:
     return False
 
 
-def _bom_find_revision(pn: str) -> str:
-    """Find the highest revision letter for a part. Handles combined-part stems."""
-    out = _run_es([pn])
+def _bom_find_revision(pn: str, ext: str = "") -> str:
+    """Find the highest revision for a part. Handles combined-part stems.
+    When *ext* is given (e.g. "pdf", "dxf") only files of that type are considered.
+    For PDFs, numeric sub-revisions (rA1, rA2, rB12) are recognised."""
+    out = _run_es([pn]) if not ext else _run_es([f"ext:{ext}", pn])
+    subrev = (ext.lower() == "pdf")
+    rev_pat = r'^[-_\s]?r([A-Za-z]\d*)$' if subrev else r'^[-_\s]?r([A-Za-z])$'
     highest = ""
+    highest_key: tuple[str, int] = ("", -1)
     for line in out.splitlines():
-        stem = Path(line.strip()).stem
+        line = line.strip()
+        if ext and not line.upper().endswith(f".{ext.upper()}"):
+            continue
+        stem = Path(line).stem
         if not stem.upper().startswith(pn.upper()):
             continue
         suffix = stem[len(pn):].strip()
@@ -2246,18 +2275,25 @@ def _bom_find_revision(pn: str) -> str:
         # combined set, not to this individual part number.
         if re.match(r'^(_\d+)+', suffix):
             continue
-        m = re.match(r'^[-_\s]?r([A-Za-z])$', suffix)
+        m = re.match(rev_pat, suffix)
         if m:
-            r = m.group(1).upper()
-            if r > highest:
-                highest = r
-    return f"r{highest}" if highest else ""
+            raw = m.group(1)
+            normalised = f"r{raw[0].upper()}{raw[1:]}"
+            key = _rev_sort_key(normalised)
+            if key > highest_key:
+                highest_key = key
+                highest = normalised
+    return highest
 
 
-def _bom_find_copy(pn: str, rev: str, target: Path, ext: str) -> tuple:
+def _bom_find_copy(pn: str, rev: str, target: Path, ext: str,
+                   standalone_only: bool = False) -> tuple:
     """
     Search for a PDF/DXF matching pn (with optional revision) and copy it.
     Also detects combined-part filenames (e.g. 240-90123_124.pdf).
+
+    When *standalone_only* is True, only files that cover exactly one part
+    (the requested pn) are considered — combined-part files are skipped.
 
     Returns (result, covered_parts):
       result        = True (copied), None (already exists), False (not found)
@@ -2283,18 +2319,30 @@ def _bom_find_copy(pn: str, rev: str, target: Path, ext: str) -> tuple:
     if not candidates:
         return False, []
 
+    # Build a filtered list, then sort so highest revision comes first.
+    # This ensures we pick the rev'd file over a no-rev duplicate.
+    viable: list[tuple[Path, str, list[str]]] = []
     for line in candidates:
         p = Path(line)
         if p.suffix.upper() != ext_up:
             continue
         if "PUNCH PROGRAM" in str(p).upper():
             continue
-        clean_stem, file_rev = _split_stem_rev(p.stem)
+        subrev = (ext.lower() == "pdf")
+        clean_stem, file_rev = _split_stem_rev(p.stem, allow_subrev=subrev)
         covered_parts = _decode_combined_stem(clean_stem)
         if pn.upper() not in [c.upper() for c in covered_parts]:
             continue
+        if standalone_only and len(covered_parts) > 1:
+            continue
         if rev and file_rev and file_rev.upper() != rev.upper():
             continue
+        viable.append((p, file_rev, covered_parts))
+
+    # Sort: highest revision first (using letter + sub-number), no-rev last
+    viable.sort(key=lambda t: _rev_sort_key(t[1]), reverse=True)
+
+    for p, _fr, covered_parts in viable:
         if not p.exists():
             continue
         dest = target / p.name

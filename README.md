@@ -117,9 +117,10 @@ User selects BOM file (target folder auto-populated)
     For each non-stock part:
       └─ es.exe finds all filenames starting with that part number
             └─ filter out PUNCH PROGRAM paths
-            └─ extract revisions (rA, rB, rC …) → pick highest
-                  ├─ copy <part> <rev>.pdf  → target folder
-                  ├─ copy <part> <rev>.dxf  → target folder
+            └─ find highest PDF rev (rA, rA1, rB …) independently
+            └─ find highest DXF rev (rA, rB …) independently
+                  ├─ copy <part> <pdf_rev>.pdf  → target (standalone preferred)
+                  ├─ copy <part> <dxf_rev>.dxf  → target
                   └─ col G = X if either file copied or already existed
               │
               ▼
@@ -138,12 +139,22 @@ User selects BOM file (target folder auto-populated)
 
 #### Revision Detection
 
-Files are matched by the pattern `<part>[-_ ]r[A-Z]`. Given:
+Revisions are detected **per file type** — PDF and DXF revisions are resolved independently. This handles cases where a PDF is rev-bumped for a drawing-only change but the DXF geometry stays the same.
+
+**DXF** revisions match `<part>[-_ ]r[A-Z]` (letter only).
+**PDF** revisions also support numeric sub-revisions: `<part>[-_ ]r[A-Z]\d*` (e.g. `rA`, `rA1`, `rA2`, `rB12`).
+
+Ordering: `rA < rA1 < rA2 < rB < rB1 < rB2 < rC …`
+
+Given:
 ```
-240-2202 rA.pdf   240-2202 rA.dxf
-240-2202 rC.pdf   240-2202 rC.dxf
+250-31025-rB.pdf    250-31025.dxf
 ```
-The script resolves `rC` (highest letter) and copies both files. If no revision suffix exists, the bare part number is used as a fallback.
+The tool resolves PDF rev = `rB`, DXF rev = none, and copies both files independently.
+
+**Standalone preference (PDFs):** when both a standalone PDF (`250-31025-rB.pdf`) and a combined-part PDF (`250-31025_50152-rB.pdf`) exist, the standalone copy is preferred. The combined file is used as a fallback when no standalone exists.
+
+If no revision suffix exists, the bare part number is used as a fallback.
 
 > **Requirement:** Excel must be **closed** before running. The app warns you and asks for confirmation before proceeding.
 
