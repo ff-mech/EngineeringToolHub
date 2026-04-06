@@ -1,0 +1,49 @@
+============================================================
+DOC PREP BREAKDOWN
+============================================================
+
+Job Folder: Z:\FOXFAB_DATA\ENGINEERING\2 JOBS\J15302 Garner Road  -PO#2365-895801
+
+  Job No.   : J15302-01
+  Job Name  : Garner Road  -PO#2365-895801
+  Enclosure : 42 x 30 x 16 ALU N3R   Qty: 1
+  Model No. : FFCC-C1-400-C5-G-ALU-LZ-FUS
+
+------------------------------------------------------------
+BOM SUMMARY:
+------------------------------------------------------------
+  Total parts    : 14
+  CNC marked (X) : 8
+  N/A marked     : 0
+  Stock (S)      : 5
+  Unmatched      : 1
+  Unmatched parts (missing CNC): row 6: 200-90001
+
+------------------------------------------------------------
+GENERATED DOCUMENTS:
+------------------------------------------------------------
+   1. Fabrication Work Order
+      -> 01_Fabrication_Work_Order.pdf
+   2. BOM
+      -> 02_BOM.pdf
+   3. CNC (duplex): 250-90002.pdf
+      -> 03_CNC_250-90002.pdf
+   4. CNC (duplex): J15302-01_14GALV.pdf
+      -> 04_CNC_J15302-01_14GALV.pdf
+   5. CNC Simplex (merged)
+      -> 05_CNC_Simplex_Merged.pdf
+   6. PDFs_Flats (merged)
+      -> 06_PDFs_Flats_Merged.pdf
+   7. Production Release Form
+      -> 07_Production_Release_Form.pdf
+   8. Electrical Pack (pages 1-2)
+      -> 08_Electrical_Pack_Pages_1_2.pdf
+   9. Assemblies (merged)
+      -> 09_Assemblies_Merged.pdf
+
+  Excluded -LAY files: 1
+
+------------------------------------------------------------
+Output: \\npsvr05\FOXFAB_REDIRECT$\lbadong\Desktop\Engineering Tool Hub\EngineeringToolHub\.claude\skills\doc-prep\scripts\DocPrep_Output_J15302 Garner Road  -PO#2365-895801_20260402_145351
+
+============================================================

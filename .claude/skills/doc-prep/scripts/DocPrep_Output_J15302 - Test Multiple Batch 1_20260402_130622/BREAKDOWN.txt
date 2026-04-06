@@ -1,0 +1,50 @@
+============================================================
+DOC PREP BREAKDOWN
+============================================================
+
+Job Folder: \\NPSVR05\FOXFAB_REDIRECT$\lbadong\Desktop\AGENT ARMY\Testing\J15302 - Test Multiple Batch 1
+
+  Job No.   : J15302-02
+  Job Name  : Garner Road  -PO#2365-895801
+  Enclosure : 72 x 36 x 30 (Wall Mount) ALU N3R   Qty: 1
+  Model No. : FFCC-C1-1200-C4-G-ALU-LZ-FUS(400A)
+
+------------------------------------------------------------
+BOM SUMMARY:
+------------------------------------------------------------
+  Total parts    : 16
+  CNC marked (X) : 14
+  N/A marked     : 0
+  Stock (S)      : 2
+  Unmatched      : 0
+
+------------------------------------------------------------
+GENERATED DOCUMENTS:
+------------------------------------------------------------
+   1. Fabrication Work Order
+      -> 01_Fabrication_Work_Order.pdf
+   2. BOM
+      -> 02_BOM.pdf
+   3. CNC (duplex): 200-90002.pdf
+      -> 03_CNC_200-90002.pdf
+   4. CNC (duplex): J15302-02_12GALV.pdf
+      -> 04_CNC_J15302-02_12GALV.pdf
+   5. CNC (duplex): J15302-02_14 GALV.pdf
+      -> 05_CNC_J15302-02_14 GALV.pdf
+   6. CNC Simplex (merged)
+      -> 06_CNC_Simplex_Merged.pdf
+   7. PDFs_Flats (merged)
+      -> 07_PDFs_Flats_Merged.pdf
+   8. Production Release Form
+      -> 08_Production_Release_Form.pdf
+   9. Electrical Pack (pages 1-2)
+      -> 09_Electrical_Pack_Pages_1_2.pdf
+  10. Assemblies (merged)
+      -> 10_Assemblies_Merged.pdf
+
+  Excluded -LAY files: 1
+
+------------------------------------------------------------
+Output: \\npsvr05\FOXFAB_REDIRECT$\lbadong\Desktop\Engineering Tool Hub\EngineeringToolHub\.claude\skills\doc-prep\scripts\DocPrep_Output_J15302 - Test Multiple Batch 1_20260402_130622
+
+============================================================
