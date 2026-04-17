@@ -1,0 +1,33 @@
+{
+  "skill_name": "drawing-check",
+  "evals": [
+    {
+      "id": 0,
+      "name": "general-pre-submission-check",
+      "prompt": "hey im about to send my drawing to vikram for review, whats the stuff i need to double check before i hit send",
+      "expected_output": "Walkthrough of the self-check list: dimensions/annotations, bend lines + flat pattern, CU PROFI hole clearances on copper. Should also mention DXF export verification and -LAY version.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "dxf-bend-lines-export",
+      "prompt": "my last couple DXFs had no bend lines when susan opened them in amada, how do i fix the solidworks export settings",
+      "expected_output": "Exact SolidWorks setup: Tools \u2192 Options \u2192 Document Properties \u2192 DXF/DWG Export \u2192 Custom Map. Map bend lines to BEND layer. Use Centerline/Section style, NOT Hidden. Mention unsuppressing Bend-Lines feature and verifying the exported DXF.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "cu-profi-copper-clearance",
+      "prompt": "quick one - copper part, 3/8 bolt thru hole, whats the clearance supposed to be? i keep forgetting",
+      "expected_output": "0.406 inches. Should clarify this is for copper only (CU PROFI table), different from galvanized/aluminum clearances.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "revision-type-letter-vs-number",
+      "prompt": "i forgot a dimension on a part thats already at the shop and i just fixed it. do i bump the letter or just add a number to the current rev",
+      "expected_output": "Number increment (e.g., rA \u2192 rA1) because it's a drawing-only change with no physical change. Letter is for physical part changes.",
+      "files": []
+    }
+  ]
+}

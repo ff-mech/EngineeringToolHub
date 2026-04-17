@@ -31,7 +31,39 @@ Flow:
 8. Wait for user confirmation
 9. Send to printer: `\\NPSVR05\FoxFab (Konica Bizhub C360i)`
 
-### 2. Vikram Workflow (Reference Job)
+### 2. Enclosure Package Prep (mech docs only, standard enclosure product folders)
+**Trigger phrases (path-based):** "prepare the enc package", "enclosure package prep"
+**Trigger phrases (enc-number, fuzzy search):** "make the enclosure", "print the enclosure", "enc print", "print enc"
+
+Use for folders under `Z:\FOXFAB_DATA\ENGINEERING\0 PRODUCTS\100 Standard Enclosures\*` (or any folder
+that contains `204 BOM`, `205 CNC`, `202 PDFs_Flats`, `203 Assemblies` directly — no `200 Mech` wrapper,
+no FWO/PRF/Electrical).
+
+**Path-based trigger:** user supplies the full folder path. Run `encprep.py` directly.
+
+**Enc-number trigger flow:**
+1. User says one of the enc-number triggers plus an enclosure number (e.g., "print enc WM-363016-SS-N3R"
+   or just "print enc 363016").
+2. List immediate subfolders of `Z:\FOXFAB_DATA\ENGINEERING\0 PRODUCTS\100 Standard Enclosures`.
+3. Smart fuzzy match: normalize both the input and the folder names (uppercase, strip spaces/dashes/underscores),
+   then rank by substring containment + token overlap. Handle missing tokens gracefully (e.g., "363016"
+   matches both `WM-363016-SS-N3R` and `WM-363016-ALU-N3R`).
+4. Present the top matches via `AskUserQuestion` with the best match marked "(Recommended)". If exactly one
+   match, still confirm with a single-option clickable (or a quick yes/no).
+5. After confirmation, run `encprep.py --path "<matched folder>"` in simulation mode.
+6. Show the markdown breakdown; wait for the user to say **print** before re-running with `--print`.
+7. Default print quantity = 1 (don't ask unless user specifies otherwise).
+
+Only generates and prints: FWO (Date + Enclosure auto-filled), BOM (CNC-marked), CNC duplex, CNC simplex
+merged, Flats merged, Assemblies merged.
+
+Run with:
+```bash
+python .claude/skills/doc-prep/scripts/encprep.py --path "Z:\...\WM-363016-SS-N3R"
+python .claude/skills/doc-prep/scripts/encprep.py --path "Z:\...\WM-363016-SS-N3R" --print
+```
+
+### 3. Vikram Workflow (Reference Job)
 **Trigger phrases:** "prep this for vikram", "vikram J##### reference J#####"
 
 This workflow uses **two jobs**:

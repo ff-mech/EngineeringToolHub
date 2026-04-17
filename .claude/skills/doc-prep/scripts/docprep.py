@@ -1105,7 +1105,8 @@ def save_pdf(src: Path, dest: Path, pages=None):
         shutil.copy2(str(src), str(dest))
 
 
-def excel_to_pdf(file: Path, dest: Path, first_sheet_only: bool, excel=None):
+def excel_to_pdf(file: Path, dest: Path, first_sheet_only: bool, excel=None,
+                 orientation: int = 2, fit_to_one_page: bool = False):
     if win32com is None:
         raise RuntimeError("pywin32 not installed. pip install pywin32")
     created = excel is None
@@ -1116,17 +1117,23 @@ def excel_to_pdf(file: Path, dest: Path, first_sheet_only: bool, excel=None):
     wb = None
     try:
         wb = excel.Workbooks.Open(str(file))
-        if first_sheet_only:
-            ws = wb.Worksheets(1)
-            ws.ExportAsFixedFormat(0, str(dest))
-        else:
-            active = wb.ActiveSheet
-            ps = active.PageSetup
-            ps.Orientation = 2
-            ps.Zoom = False
-            ps.FitToPagesWide = 1
-            ps.FitToPagesTall = False
-            active.ExportAsFixedFormat(0, str(dest))
+        ws = wb.Worksheets(1) if first_sheet_only else wb.ActiveSheet
+        # Apply Letter / Landscape / Fit-all-columns-to-1-page to every sheet
+        # that will be exported so the BOM (and any multi-sheet workbook)
+        # always prints consistently.
+        targets = [ws] if first_sheet_only else list(wb.Worksheets)
+        for t in targets:
+            try:
+                ps = t.PageSetup
+                ps.PaperSize = 1          # xlPaperLetter
+                ps.Orientation = orientation  # 1=portrait, 2=landscape
+                ps.Zoom = False
+                ps.FitToPagesWide = 1
+                # Fit entire sheet on one page (both dirs) for PRF-style prints
+                ps.FitToPagesTall = 1 if fit_to_one_page else False
+            except Exception:
+                pass
+        ws.ExportAsFixedFormat(0, str(dest))
     finally:
         if wb is not None:
             try:
@@ -1392,7 +1399,9 @@ def generate_documents(plan: dict, out_dir: Path) -> list[tuple[str, Path]]:
         if plan.get("prf"):
             d = dest("Production_Release_Form")
             try:
-                excel_to_pdf(plan["prf"], d, first_sheet_only=True, excel=excel)
+                # PRF: Letter, Portrait, one-sided, fit sheet on one page
+                excel_to_pdf(plan["prf"], d, first_sheet_only=True, excel=excel,
+                             orientation=1, fit_to_one_page=True)
                 generated.append(("Production Release Form", d))
                 log(f"  OK  Production Release Form")
             except Exception as e:
@@ -1510,31 +1519,56 @@ def print_documents(generated: list[tuple[str, Path]], printer_name: str):
         acro_app = win32com.client.Dispatch("AcroExch.App")
         acro_app.Hide()
 
-        for i, (pdf_path, is_duplex) in enumerate(print_jobs):
+        def _print_one(pdf_path, is_duplex):
+            """Dispatch a single PDF. Returns True on success, raises on COM failure."""
             _set_devmode_duplex(printer_name, is_duplex)
-            mode_str = "duplex" if is_duplex else "simplex"
+            pddoc = win32com.client.Dispatch("AcroExch.PDDoc")
+            if not pddoc.Open(str(pdf_path)):
+                error(f"  COM could not open: {pdf_path.name}")
+                return False
             try:
-                pddoc = win32com.client.Dispatch("AcroExch.PDDoc")
-                if not pddoc.Open(str(pdf_path)):
-                    error(f"  COM could not open: {pdf_path.name}")
-                    continue
                 n_pages = pddoc.GetNumPages()
                 avdoc = pddoc.OpenAVDoc("")
                 if avdoc is None:
                     error(f"  Could not get AVDoc: {pdf_path.name}")
-                    continue
-                ok = avdoc.PrintPages(0, n_pages - 1, 2, True, False)
-                if ok:
-                    log(f"  OK  {pdf_path.name} ({mode_str})")
-                else:
-                    error(f"  PrintPages failed: {pdf_path.name}")
-                avdoc.Close(True)
-                pddoc.Close()
-            except Exception as e:
-                error(f"  {pdf_path.name}: {e}")
+                    return False
+                try:
+                    ok = avdoc.PrintPages(0, n_pages - 1, 2, True, False)
+                finally:
+                    try: avdoc.Close(True)
+                    except Exception: pass
+                return bool(ok)
+            finally:
+                try: pddoc.Close()
+                except Exception: pass
 
-            if i < len(print_jobs) - 1:
-                time.sleep(0.2)
+        for i, (pdf_path, is_duplex) in enumerate(print_jobs):
+            mode_str = "duplex" if is_duplex else "simplex"
+            # Wait for spooler before each dispatch so Acrobat doesn't get
+            # slammed while it's still digesting the previous (possibly huge)
+            # merged PDF. This prevents the -2147417851 "server threw an
+            # exception" error we saw on the PRF after the 93-file merged
+            # flats print.
+            if i > 0:
+                _wait_spooler_stable(printer_name, timeout=120.0)
+
+            last_err = None
+            for attempt in range(2):  # one retry on COM failure
+                try:
+                    if _print_one(pdf_path, is_duplex):
+                        log(f"  OK  {pdf_path.name} ({mode_str})")
+                    else:
+                        error(f"  PrintPages failed: {pdf_path.name}")
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    warn(f"  {pdf_path.name}: {e} (attempt {attempt + 1}/2)")
+                    # Let Acrobat recover before retrying
+                    _wait_spooler_stable(printer_name, timeout=120.0)
+                    time.sleep(2.0)
+            if last_err is not None:
+                error(f"  {pdf_path.name}: giving up after retry — {last_err}")
 
         acro_app.Exit()
         log("Print sequence complete via Acrobat COM.")

@@ -698,6 +698,7 @@ def print_excel_active_sheet(file_path: Path, printer_name: str, mode: str, firs
             if not active.Visible:
                 raise RuntimeError(f"Active sheet is hidden in {file_path.name}.")
             page_setup = active.PageSetup
+            page_setup.PaperSize = 1  # xlPaperLetter
             page_setup.Orientation = 2
             page_setup.Zoom = False
             page_setup.FitToPagesWide = 1

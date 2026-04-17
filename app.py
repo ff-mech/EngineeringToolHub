@@ -1409,6 +1409,7 @@ class App:
                 wb = excel.Workbooks.Open(str(bom_path))
                 active = wb.ActiveSheet
                 ps = active.PageSetup
+                ps.PaperSize = 1  # xlPaperLetter
                 ps.Orientation = 2
                 ps.Zoom = False
                 ps.FitToPagesWide = 1

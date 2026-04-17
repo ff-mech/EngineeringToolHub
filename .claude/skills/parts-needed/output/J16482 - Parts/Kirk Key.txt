@@ -1,0 +1,5 @@
+Kirk Key parts — handled manually, no 3D model copied
+============================================================
+
+KDL000010  —  KIRK KEY INTERLOCK FOR WALL MOUNTED TEMP GENERATOR BREAKER COVER
+KFL007510-H--  —  KIRK KEY INTERLOCK FOR CLIENT UPSTREAM BREAKER COVER (MATCHED TUMBLER SET)
